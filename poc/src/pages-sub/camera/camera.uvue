@@ -1,0 +1,285 @@
+<template>
+  <view class="page">
+    <text class="h1">拍照上传 + OCR</text>
+    <text class="hint">验证：相机调起、压缩体积、上传、结果渲染</text>
+
+    <button class="btn" @click="pick">拍照 / 选图</button>
+
+    <image v-if="src" class="preview" :src="src" mode="widthFix" />
+
+    <view class="card" v-if="src">
+      <text class="label">原图体积</text>
+      <text class="body">{{ originalKb }} KB</text>
+    </view>
+
+    <button class="btn ghost" :disabled="!src" @click="compress">压缩到 70 质量</button>
+
+    <view class="card" v-if="compressedKb">
+      <text class="label">压缩后（服务端回显）</text>
+      <text class="body">{{ compressedKb }} KB</text>
+    </view>
+
+    <button class="btn" :disabled="!src" @click="upload">上传</button>
+
+    <view class="card" v-if="uploadInfo">
+      <text class="label">服务端收到</text>
+      <text class="body">{{ uploadInfo.kb }} KB</text>
+      <text class="warn" v-if="uploadInfo.warn">{{ uploadInfo.warn }}</text>
+    </view>
+
+    <button class="btn ghost" :disabled="!src" @click="ocr">识别报告</button>
+
+    <view class="card" v-for="it in items" :key="it.name">
+      <text class="label">{{ it.name }}</text>
+      <view class="valueRow">
+        <text :class="it.flag === 'normal' ? 'value' : 'valueBad'">{{ it.value }}</text>
+        <text class="unit">{{ it.unit }}</text>
+      </view>
+      <text class="ref">参考范围 {{ it.refLow }} ~ {{ it.refHigh }}</text>
+    </view>
+
+    <view class="stage" v-if="stage">
+      <text class="stageText">{{ stage }}</text>
+    </view>
+
+    <view class="error" v-if="error">
+      <text class="errorText">{{ error }}</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+import { formatError } from '@/utils/err'
+
+interface OcrItem {
+  name: string
+  value: string
+  unit: string
+  refLow: number
+  refHigh: number
+  flag: string
+}
+
+let BASE = 'http://localhost:8787'
+// #ifndef H5
+BASE = 'http://172.25.209.140:8787'
+// #endif
+
+const src = ref('')
+const originalKb = ref(0)
+const compressedPath = ref('')
+const compressedKb = ref(0)
+const uploadInfo = ref<any>(null)
+const items = ref<OcrItem[]>([])
+const error = ref('')
+const stage = ref('')
+const uploadCount = ref(0)
+
+function pick () {
+  error.value = ''
+  uni.chooseImage({
+    count: 1,
+    sourceType: ['camera', 'album'],
+    sizeType: ['original'],
+    success: (res: any) => {
+      src.value = res.tempFilePaths[0]
+      const f = res.tempFiles && res.tempFiles[0]
+      originalKb.value = f && f.size ? Math.round(f.size / 1024) : 0
+      compressedPath.value = ''
+      compressedKb.value = 0
+      uploadInfo.value = null
+      items.value = []
+      stage.value = ''
+      uploadCount.value = 0
+    },
+    fail: (e: any) => {
+      error.value = '相机/相册失败：' + formatError(e)
+    }
+  } as any)
+}
+
+function compress () {
+  error.value = ''
+  // #ifdef H5
+  error.value = 'H5 端不支持 uni.compressImage，需用 canvas 压缩（PoC 不验证这一项）'
+  return
+  // #endif
+  // #ifndef H5
+  uni.compressImage({
+    src: src.value,
+    quality: 70,
+    success: (res: any) => {
+      compressedPath.value = res.tempFilePath
+      // 体积由上传结果反推，避免依赖各端 fileInfo API 差异
+      uploadFile(compressedPath.value, true)
+    },
+    fail: (e: any) => {
+      error.value = '压缩失败：' + formatError(e)
+    }
+  } as any)
+  // #endif
+}
+
+function upload () {
+  uploadFile(compressedPath.value || src.value, false)
+}
+
+/**
+ * 上传
+ * auto = true 时是压缩后的自动上传，只用来拿服务端回显的真实字节数
+ *
+ * 参数统一用 filePath，不要用 files：
+ * - 微信小程序只认 filePath，传 files 会报 "parameter.filePath should be String instead of Undefined"
+ * - App 端实测 filePath 可用（压缩后的自动上传已成功回显 260KB）
+ * - H5 端同样只认 filePath
+ */
+function uploadFile (path: string, auto: boolean) {
+  error.value = ''
+  stage.value = auto ? '压缩完成，正在回显体积…' : '上传中…'
+
+  if (path.indexOf('content://') === 0) {
+    stage.value = '注意：该路径是 content://，可能读不到，先试一次看结果'
+  }
+
+  uni.uploadFile({
+    url: `${BASE}/api/upload-raw`,
+    filePath: path,
+    name: 'file',
+    success: (res: any) => {
+      uploadCount.value++
+      try {
+        uploadInfo.value = JSON.parse(res.data)
+        if (auto) compressedKb.value = uploadInfo.value.kb
+        stage.value = '上传完成（第 ' + uploadCount.value + ' 次），服务端收到 ' + uploadInfo.value.kb + ' KB'
+      } catch (e) {
+        stage.value = ''
+        error.value = '返回不是 JSON：' + String(res.data)
+      }
+    },
+    fail: (e: any) => {
+      stage.value = ''
+      error.value = '上传失败：' + formatError(e) + '（602001 多为明文 HTTP 未放行，或路径是 content:// 读不到）'
+    }
+  } as any)
+}
+
+function ocr () {
+  error.value = ''
+  uni.request({
+    url: `${BASE}/api/ocr`,
+    method: 'POST',
+    data: {},
+    success: (res: any) => {
+      const data = res.data
+      if (data && data.items) {
+        items.value = data.items as OcrItem[]
+      } else {
+        error.value = 'OCR 返回异常：' + JSON.stringify(data)
+      }
+    },
+    fail: (e: any) => {
+      error.value = 'OCR 请求失败：' + formatError(e)
+    }
+  } as any)
+}
+</script>
+
+<style>
+.page {
+  padding: 24rpx;
+  background-color: #e8dcc8;
+}
+.h1 {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #2f4f43;
+}
+.hint {
+  font-size: 24rpx;
+  color: #6b6b6b;
+  margin-top: 8rpx;
+  margin-bottom: 24rpx;
+}
+.btn {
+  margin-top: 16rpx;
+  background-color: #2f4f43;
+  color: #ffffff;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+}
+.ghost {
+  background-color: #ffffff;
+  color: #2f4f43;
+}
+.preview {
+  width: 100%;
+  margin-top: 16rpx;
+  border-radius: 12rpx;
+}
+.card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 20rpx;
+  margin-top: 16rpx;
+}
+.label {
+  font-size: 24rpx;
+  color: #6b6b6b;
+  margin-bottom: 8rpx;
+}
+.body {
+  font-size: 30rpx;
+  color: #222222;
+}
+.warn {
+  font-size: 24rpx;
+  color: #c0392b;
+  margin-top: 8rpx;
+}
+.valueRow {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+}
+.value {
+  font-size: 40rpx;
+  color: #2f4f43;
+  font-weight: bold;
+}
+.valueBad {
+  font-size: 40rpx;
+  color: #c0392b;
+  font-weight: bold;
+}
+.unit {
+  font-size: 24rpx;
+  color: #6b6b6b;
+  margin-left: 8rpx;
+}
+.ref {
+  font-size: 22rpx;
+  color: #8a8a8a;
+  margin-top: 6rpx;
+}
+.stage {
+  margin-top: 16rpx;
+  padding: 16rpx;
+  background-color: #ffffff;
+  border-radius: 12rpx;
+}
+.stageText {
+  font-size: 24rpx;
+  color: #2f4f43;
+}
+.error {
+  margin-top: 16rpx;
+  padding: 16rpx;
+  background-color: #fbe9e7;
+  border-radius: 12rpx;
+}
+.errorText {
+  font-size: 24rpx;
+  color: #c0392b;
+}
+</style>

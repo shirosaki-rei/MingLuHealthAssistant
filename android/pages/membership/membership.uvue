@@ -1,0 +1,172 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">会员</text>
+			<text class="hint">会员只影响消耗型动作。就医路径人人可用，跟会员没关系。</text>
+
+			<text class="loading" v-if="loading">加载中…</text>
+
+			<!-- 状态卡：克制呈现，不做成销售页 -->
+			<view class="cardFlat memHead" v-if="m !== null">
+				<view class="rowBetween">
+					<text class="cardTitle">会员状态</text>
+					<text class="tag tagOk" v-if="m.status === 'active'">{{ statusLabel }}</text>
+					<text class="tag tagMuted" v-else>{{ statusLabel }}</text>
+				</view>
+				<view class="memPlan">
+					<text class="memPlanVal">{{ planLabel }}</text>
+					<text class="cardMeta" v-if="m.status !== 'none'">{{ fmtTime(m.expires_at) }} 到期</text>
+					<text class="cardMeta" v-else>开通后按套餐计算到期时间</text>
+				</view>
+			</view>
+
+			<block v-if="entRows.length > 0">
+				<text class="section">当前权益</text>
+				<view class="cardFlat">
+					<view class="entRow" v-for="e in entRows" :key="e.label">
+						<text class="entKey">{{ e.label }}</text>
+						<text class="entVal">{{ e.value }}</text>
+					</view>
+				</view>
+			</block>
+
+			<!-- 就医路径清单不在这里列：action 名是给服务端和日志看的，用户读不懂
+			     （「预问诊.症状匹配」这种带点号的串）。想说的事一句话就够。 -->
+			<view class="callout">
+				<text class="calloutTitle">就医路径永久免费</text>
+				<text class="calloutDesc">预问诊、症状匹配、找医生与咨询、报告解读、时间线与导出、提醒，都不看会员状态。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<view class="bar">
+			<button class="barBtn" @click="openMember">开通会员</button>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+
+	type Membership = components['schemas']['Membership']
+
+	const STATUS: Record<string, string> = { none: '未开通', active: '生效中', expired: '已过期' }
+	const PLAN: Record<string, string> = { monthly: '月卡', yearly: '年卡', none: '无' }
+	// entitlements 是对象，给出常见 key 的中文名，未知 key 原样展示
+	const ENT: Record<string, string> = {
+		daily_chat_limit: '每日对话轮次',
+		custom_persona_quota: '自定义角色额度',
+		max_patients: '就诊人数量上限',
+		max_reminders: '提醒条数上限',
+		monthly_report_interpret: '每月报告解读次数',
+		family_annual_report: '家庭年度报告',
+		history_report_compare: '历史报告对比',
+		priority_handoff: '优先转人工'
+	}
+
+	const m = ref<Membership | null>(null)
+	const error = ref('')
+	const loading = ref(false)
+
+	const statusLabel = computed(() => {
+		if (m.value === null) return '—'
+		return STATUS[m.value.status] ?? m.value.status
+	})
+	const planLabel = computed(() => {
+		if (m.value === null) return '—'
+		return PLAN[m.value.plan] ?? m.value.plan
+	})
+	const entRows = computed(() => {
+		const src = m.value === null ? undefined : m.value.entitlements
+		if (src === undefined) return []
+		const rows: { label: string; value: string }[] = []
+		const keys = Object.keys(src)
+		for (const k of keys) {
+			// 布尔权益说人话：false 是「不可用」，true 是「可用」，别把 false 当数字摆。
+			// null 是「不限」（会员的 max_reminders 就是 null），不能 String() 成 "null" 摆出来
+			const raw = src[k]
+			let value = '不限'
+			if (raw !== null && raw !== undefined) {
+				value = typeof raw === 'boolean' ? (raw ? '可用' : '不可用') : String(raw)
+			}
+			rows.push({ label: ENT[k] ?? k, value })
+		}
+		return rows
+	})
+
+	onLoad(() => {
+		load()
+	})
+
+	async function load () {
+		error.value = ''
+		loading.value = true
+		try {
+			m.value = await api.getMembership()
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	// 付费墙只能拦消耗型动作（对话轮次 / 报告解读 / 提醒条数 / 自定义角色），就医路径永不可拦；
+	// 这里只做展示与开通引导，不拦任何就医操作。
+	function openMember () {
+		uni.showToast({ title: '支付渠道接入中', icon: 'none' })
+	}
+
+	function fmtTime (iso: string): string {
+		if (iso === '') return ''
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.memPlan {
+		margin-top: 20rpx;
+	}
+
+	.memPlanVal {
+		font-size: 44rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1.2;
+	}
+
+	.bar {
+		padding: 20rpx 32rpx 32rpx;
+		background-color: var(--c-card);
+		border-top: 2rpx solid var(--c-border-weak);
+	}
+
+	.barBtn {
+		height: 88rpx;
+		align-items: center;
+		justify-content: center;
+		background-color: var(--c-brand);
+		color: var(--c-on-brand);
+		border-radius: 16rpx;
+		font-size: 30rpx;
+		font-weight: 600;
+	}
+</style>

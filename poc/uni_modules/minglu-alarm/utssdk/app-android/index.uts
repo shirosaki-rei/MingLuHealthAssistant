@@ -1,0 +1,74 @@
+// 明路精确闹钟 —— Android 端桥接
+//
+// 职责：把 UTS 的 options 拆成 Kotlin 能接收的基本类型，再调 MingluAlarm.kt
+// 原生实现放在同目录的 MingluAlarm.kt，由 UTS 插件编译链自动纳入构建。
+
+import { MingluAlarm } from 'com.minglu.alarm'
+import Context from 'android.content.Context'
+import { UTSAndroid } from 'io.dcloud.uts'
+import { SetAlarmOptions, AlarmResult } from '../interface.uts'
+
+function appCtx (): Context {
+  const ctx = UTSAndroid.getAppContext()
+  return ctx as Context
+}
+
+export function canScheduleExact (): boolean {
+  return MingluAlarm.canScheduleExact(appCtx())
+}
+
+export function openExactAlarmSettings (): void {
+  MingluAlarm.openExactAlarmSettings(appCtx())
+}
+
+/** 通知权限是否开启。Android 13+ 必须在系统里手动授权，只声明清单不够 */
+export function areNotificationsEnabled (): boolean {
+  return MingluAlarm.areNotificationsEnabled(appCtx())
+}
+
+/** 跳到本应用的通知设置页 */
+export function openNotificationSettings (): void {
+  MingluAlarm.openNotificationSettings(appCtx())
+}
+
+/** 最近一次闹钟触发时间（HH:mm:ss），空串表示从未触发 */
+export function lastFireAt (): string {
+  return MingluAlarm.lastFireAt(appCtx())
+}
+
+/**
+ * 立即手动触发一次广播（不走闹钟）。
+ * 诊断用：有反应说明 Receiver 已注册，没反应说明 manifest 没合并进去。
+ */
+export function fireNow (id: number, title: string, content: string): boolean {
+  return MingluAlarm.fireNow(appCtx(), id, title, content)
+}
+
+/** Receiver 是否已注册（判断 manifest 是否合并成功） */
+export function isReceiverRegistered (): boolean {
+  return MingluAlarm.isReceiverRegistered(appCtx())
+}
+
+/** 手动触发一次兜底动态注册 */
+export function ensureReceiver (): void {
+  MingluAlarm.ensureReceiver(appCtx())
+}
+
+export function setExactAlarm (options: SetAlarmOptions): AlarmResult {
+  const ok = MingluAlarm.setExact(
+    appCtx(),
+    options.id,
+    options.triggerAtMs,
+    options.title,
+    options.content
+  )
+  if (ok) {
+    return { ok: true, message: '已设定，触发时间 ' + options.triggerAtMs }
+  }
+  return { ok: false, message: '未能设定：多半是没开「闹钟与提醒」权限，点下面按钮去开' }
+}
+
+export function cancelAlarm (id: number): AlarmResult {
+  MingluAlarm.cancel(appCtx(), id)
+  return { ok: true, message: '已取消' }
+}

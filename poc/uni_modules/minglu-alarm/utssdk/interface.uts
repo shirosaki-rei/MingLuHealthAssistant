@@ -1,0 +1,22 @@
+// 明路精确闹钟 —— 跨平台类型契约
+// 这一层只声明类型，三端共用；实现在 app-android 下。
+
+export type SetAlarmOptions = {
+  /** 业务唯一 id，用于取消与去重，建议直接用提醒的 reminder_id */
+  id: number
+  /** 触发时间戳（毫秒）。用 number 而非 Long，避免 UTS 与 Kotlin 的数值类型不匹配 */
+  triggerAtMs: number
+  title: string
+  content: string
+}
+
+export type AlarmResult = {
+  ok: boolean
+  /** 可直接展示给用户的原因 */
+  message: string
+}
+
+export type SetExactAlarm = (options: SetAlarmOptions) => AlarmResult
+export type CancelAlarm = (id: number) => AlarmResult
+export type CanScheduleExact = () => boolean
+export type OpenExactAlarmSettings = () => void

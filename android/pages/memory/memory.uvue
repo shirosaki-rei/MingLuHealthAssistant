@@ -1,0 +1,275 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">智能体记忆</text>
+			<text class="hint">明路在对话中记下的健康事实都列在这里，你可以逐条修改或删除。记忆绑定就诊人，切换角色后完全共享。</text>
+
+			<!-- 记忆是按人记的，归属必须先说清楚 -->
+			<view class="cardFlat ownerBar" v-if="session.patientId !== ''">
+				<text class="ownerLabel">记忆归属</text>
+				<text class="ownerName" v-if="patientName !== ''">{{ patientName }}</text>
+				<text class="ownerName ownerDash" v-else>当前就诊人</text>
+				<text class="note" v-if="items.length > 0">共 {{ items.length }} 条，其中 {{ pendingCount }} 条待你确认</text>
+			</view>
+
+			<view v-if="session.patientId === ''" class="cardWarn">
+				<text class="warnText">还没有选择就诊人</text>
+				<text class="cardMeta">记忆是按人记的，换个人看到的内容完全不同。请回首页选一位就诊人。</text>
+				<button class="btn ghost" @click="goHome">回首页选就诊人</button>
+			</view>
+
+			<block v-if="session.patientId !== ''">
+				<text class="loading" v-if="loading">加载中…</text>
+				<view v-if="!loading && items.length === 0" class="empty">
+					<text class="emptyText">还没有记忆，聊几句就会慢慢积累。</text>
+				</view>
+
+				<view v-for="m in items" :key="m.id" class="cardFlat memCard">
+					<view class="row">
+						<text class="badge">{{ typeLabel(m.type) }}</text>
+						<text class="grow memKey">{{ m.key }}</text>
+						<text class="tag tagWarn" v-if="isPending(m)">待确认</text>
+						<text class="tag tagOk" v-else>已确认</text>
+					</view>
+					<text class="memValue">{{ m.value }}</text>
+					<text class="note" v-if="isPending(m)">这是 AI 单方面记下的，你确认或改过才算数。</text>
+					<text class="note" v-else-if="hasText(m.confirmed_at)">确认于 {{ fmtTime(m.confirmed_at) }}</text>
+
+					<view class="actions">
+						<button class="mini" @click="startEdit(m)">修改</button>
+						<button class="mini ghost" @click="remove(m)">删除</button>
+					</view>
+
+					<view class="editBox" v-if="editingId === m.id">
+						<text class="fieldLabel">名称 key</text>
+						<input class="input" placeholder="如 allergy" :value="editKey" @input="onEditKey" />
+						<text class="fieldLabel">内容 value</text>
+						<textarea class="ta small" placeholder="记忆内容" :value="editValue" @input="onEditValue" />
+						<button class="mini" :disabled="saving" @click="saveEdit(m)">保存</button>
+						<button class="mini ghost" @click="cancelEdit">取消</button>
+					</view>
+				</view>
+			</block>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	// 智能体记忆是「个人信息删除权」的落地：用户能查看、修改、删除每一条健康事实，
+	// 所有端（含小程序）都必须支持。删除是真删除，所有角色同时失效该条，不可恢复。
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { hasText } from '@/utils/blank'
+
+	type AgentMemory = components['schemas']['AgentMemory']
+
+	const TYPE: Record<string, string> = { fact: '事实', pref: '偏好', event: '事件' }
+
+	const items = ref<AgentMemory[]>([])
+	const patientName = ref('')
+	const loading = ref(false)
+	const saving = ref(false)
+	const error = ref('')
+
+	const editingId = ref('')
+	const editKey = ref('')
+	const editValue = ref('')
+
+	/** 待确认条数单独报出来，别让用户在列表里自己数 */
+	const pendingCount = computed(() => {
+		let n = 0
+		for (const m of items.value) {
+			if (isPending(m)) n = n + 1
+		}
+		return n
+	})
+
+	// onPageShow：就诊人可能在首页被重新选过，每次进来都按当前就诊人重拉
+	onPageShow(() => {
+		error.value = ''
+		editingId.value = ''
+		if (session.patientId === '') {
+			items.value = []
+			patientName.value = ''
+			return
+		}
+		load()
+		loadPatient()
+	})
+
+	async function loadPatient () {
+		try {
+			const p = await api.getPatient(session.patientId)
+			patientName.value = p.name
+		} catch (e) {
+			// 就诊人名只是上下文说明，拉不到不影响记忆本身，不弹错误
+			patientName.value = ''
+		}
+	}
+
+	async function load () {
+		if (session.patientId === '') return
+		loading.value = true
+		try {
+			const res = await api.listMemories(session.patientId)
+			items.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	function typeLabel (t: string): string {
+		return TYPE[t] ?? t
+	}
+	// confirmed_at 为空 = AI 单方面记下、用户还没确认，需要明显标出
+	function isPending (m: AgentMemory): boolean {
+		return !hasText(m.confirmed_at)
+	}
+
+	function startEdit (m: AgentMemory) {
+		editingId.value = m.id
+		editKey.value = m.key
+		editValue.value = m.value
+		error.value = ''
+	}
+	function onEditKey (e: any) {
+		editKey.value = e.detail.value
+	}
+	function onEditValue (e: any) {
+		editValue.value = e.detail.value
+	}
+	function cancelEdit () {
+		editingId.value = ''
+	}
+
+	async function saveEdit (m: AgentMemory) {
+		error.value = ''
+		const value = editValue.value.trim()
+		if (value === '') {
+			error.value = '内容不能为空'
+			return
+		}
+		saving.value = true
+		try {
+			await api.updateMemory(m.id, { value, key: editKey.value.trim() })
+			editingId.value = ''
+			await load()
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			saving.value = false
+		}
+	}
+
+	function remove (m: AgentMemory) {
+		uni.showModal({
+			title: '删除记忆',
+			content: '确定删除这条记忆？删除后所有角色都不再记得它，不可恢复。',
+			success: (r: any) => {
+				if (r.confirm) doRemove(m.id)
+			}
+		})
+	}
+
+	async function doRemove (id: string) {
+		try {
+			await api.deleteMemory(id)
+			if (editingId.value === id) editingId.value = ''
+			await load()
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	function goHome () {
+		uni.reLaunch({ url: '/pages/home/home' })
+	}
+
+	function fmtTime (iso: string | undefined): string {
+		if (iso === undefined || iso === '') return ''
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.row {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.ownerBar {
+		padding: 24rpx 28rpx;
+	}
+
+	.ownerLabel {
+		font-size: 22rpx;
+		color: var(--c-muted);
+	}
+
+	.ownerName {
+		margin-top: 6rpx;
+		font-size: 32rpx;
+		font-weight: bold;
+		color: var(--c-text);
+	}
+
+	.ownerDash {
+		color: var(--c-faint);
+	}
+
+	.memCard {
+		padding: 28rpx;
+	}
+
+	.memKey {
+		margin-left: 12rpx;
+		font-size: 24rpx;
+		font-weight: 600;
+		color: var(--c-text-2);
+	}
+
+	.memValue {
+		margin-top: 12rpx;
+		font-size: 28rpx;
+		color: var(--c-text);
+		line-height: 1.6;
+	}
+
+	.actions {
+		display: flex;
+		flex-direction: row;
+		margin-top: 20rpx;
+	}
+
+	.editBox {
+		margin-top: 16rpx;
+	}
+</style>

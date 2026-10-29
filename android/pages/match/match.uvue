@@ -1,0 +1,137 @@
+<template>
+	<view class="page">
+		<text class="h1">症状匹配科室</text>
+		<text class="hint">一行写一个症状，也可以用逗号分隔，最多 10 个。说得越具体，匹配越准。</text>
+		<textarea class="ta" placeholder="例如：头晕乏力五天，早上起床时明显" :value="raw" @input="onRaw" />
+		<button class="btn" :disabled="matching" @click="match">{{ matching ? '匹配中…' : '开始匹配' }}</button>
+
+		<block v-if="searched">
+			<text class="section">推荐科室</text>
+			<view v-for="(m, i) in top3" :key="m.code" class="card" @tap="goDoctors(m.code, m.name)">
+				<view class="rowBetween">
+					<text class="cardTitle">{{ m.name }}</text>
+					<text class="conf">置信度 {{ percent(m.confidence) }}</text>
+				</view>
+				<text class="cardMeta">{{ m.reason }}</text>
+				<text class="go">查看该科室医生</text>
+			</view>
+			<view class="empty" v-if="top3.length === 0">
+				<text class="emptyText">没从症状里认出合适的科室，别硬猜，自己选一个吧。</text>
+			</view>
+		</block>
+
+		<button class="btn ghost" :disabled="picking" @click="loadDepartments">{{ picking ? '加载中…' : '自己选科室' }}</button>
+
+		<block v-if="departments.length > 0">
+			<text class="section">全部科室</text>
+			<view v-for="d in departments" :key="d.code" class="card" @tap="goDoctors(d.code, d.name)">
+				<text class="cardTitle">{{ d.name }}</text>
+				<text class="cardMeta" v-if="d.description">{{ d.description }}</text>
+				<text class="warn" v-if="!d.consult_enabled">暂未开放，可先看知识或线下就诊</text>
+			</view>
+		</block>
+
+		<text class="error" v-if="error !== ''">{{ error }}</text>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+
+	type DepartmentMatch = components['schemas']['DepartmentMatch']
+
+	/** api.listDepartments 的返回类型没进 schemas，这里按契约字段手写 */
+	interface Department {
+		code: string
+		name: string
+		description: string
+		consult_enabled: boolean
+	}
+
+	const raw = ref('')
+	const top3 = ref<DepartmentMatch[]>([])
+	const departments = ref<Department[]>([])
+	const searched = ref(false)
+	const matching = ref(false)
+	const picking = ref(false)
+	const error = ref('')
+
+	// 从预问诊「确认」跳过来时会把主诉带过来，省得用户再打一遍
+	onLoad((options: any) => {
+		const s = options === undefined || options.symptoms === undefined ? '' : String(options.symptoms)
+		if (s !== '') {
+			raw.value = s
+			match()
+		}
+	})
+
+	function onRaw (e: any) {
+		raw.value = e.detail.value
+	}
+
+	/** 一行一个或逗号分隔都认；去空去重，截到 10 个（服务端也只收 10 个） */
+	function parseSymptoms (): string[] {
+		const out: string[] = []
+		const parts = raw.value.split(/[\n,，;；]/)
+		for (const part of parts) {
+			const s = part.trim()
+			if (s !== '' && out.indexOf(s) < 0) out.push(s)
+			if (out.length >= 10) break
+		}
+		return out
+	}
+
+	function percent (confidence: number): string {
+		return Math.round(confidence * 100) + '%'
+	}
+
+	async function match () {
+		error.value = ''
+		const symptoms = parseSymptoms()
+		if (symptoms.length === 0) {
+			error.value = '先写一个症状，比如「头晕」'
+			return
+		}
+		matching.value = true
+		try {
+			const res = await api.matchDepartments(symptoms, session.patientId === '' ? undefined : session.patientId)
+			// 契约说服务端已按置信度排序，这里再排一次只取 Top3，排序变了也不塌
+			top3.value = res.items.slice().sort((a, b) => b.confidence - a.confidence).slice(0, 3)
+			searched.value = true
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			matching.value = false
+		}
+	}
+
+	async function loadDepartments () {
+		error.value = ''
+		picking.value = true
+		try {
+			const res = await api.listDepartments()
+			departments.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			picking.value = false
+		}
+	}
+
+	/** 科室名是中文，编码一下避免特殊字符把 url 后面的参数截断 */
+	function goDoctors (code: string, name: string) {
+		uni.navigateTo({
+			url: '/pages/doctors/doctors?department_code=' + code + '&department_name=' + encodeURIComponent(name)
+		})
+	}
+</script>
+
+<style>
+	.page {
+		padding: 32rpx;
+	}
+</style>

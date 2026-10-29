@@ -1,0 +1,22 @@
+{
+  "id": "minglu-alarm",
+  "displayName": "明路精确闹钟",
+  "version": "0.1.0",
+  "description": "AlarmManager 精确闹钟 + 开机恢复 + 本地通知，用于用药提醒",
+  "keywords": ["alarm", "reminder", "notification"],
+  "dcloudext": {
+    "type": "uts"
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "platforms": {
+      "client": {
+        "App": {
+          "app-android": "y",
+          "app-ios": "n",
+          "app-harmony": "n"
+        }
+      }
+    }
+  }
+}

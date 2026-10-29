@@ -1,0 +1,314 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<view v-if="doctor !== null" class="cardFlat">
+				<view class="row">
+					<text class="docAvatar">{{ initial(doctor.name) }}</text>
+					<view class="grow">
+						<text class="docName">{{ doctor.name }}</text>
+						<text class="docTitle">{{ doctor.title }}</text>
+						<text class="docMeta" v-if="doctor.hospital">{{ doctor.hospital }}</text>
+						<text class="docMeta" v-if="department !== ''">科室：{{ department }}</text>
+					</view>
+					<text :class="statusClass(doctor.online_status)">{{ statusText(doctor.online_status) }}</text>
+				</view>
+
+				<!-- 关键指标一行摊开：数字大、单位小，别让小字承载关键信息 -->
+				<view class="docStats">
+					<view class="docStat">
+						<text class="docStatVal" v-if="minutesText(doctor.response_minutes) !== ''">{{ minutesText(doctor.response_minutes) }}<text class="docStatUnit"> 分钟</text></text>
+						<text class="docStatVal docStatDash" v-else>—</text>
+						<text class="docStatKey">平均回复</text>
+					</view>
+					<view class="docStat">
+						<text class="docStatVal" v-if="priceText(doctor.price_cents) !== ''">¥{{ priceText(doctor.price_cents) }}</text>
+						<text class="docStatVal docStatDash" v-else>—</text>
+						<text class="docStatKey">单次咨询</text>
+					</view>
+					<view class="docStat">
+						<text class="docStatVal docStatSm">{{ statusText(doctor.online_status) }}</text>
+						<text class="docStatKey">当前状态</text>
+					</view>
+				</view>
+			</view>
+
+			<view class="loading" v-else-if="loading">正在加载医生信息…</view>
+
+			<text class="section" v-if="specialtyList.length > 0">擅长</text>
+			<view class="docTags" v-if="specialtyList.length > 0">
+				<text class="docTag" v-for="(s, i) in specialtyList" :key="i">{{ s }}</text>
+			</view>
+
+			<view class="reason" v-if="doctor !== null && hasText(doctor.match_reason)">
+				<text class="reasonText">为什么推荐这位：{{ doctor.match_reason }}</text>
+			</view>
+
+			<view class="callout">
+				<text class="calloutTitle">咨询属于就医路径</text>
+				<text class="calloutDesc">不校验会员状态、不消耗对话额度。平台只做信息整理与咨询撮合，不提供诊断、处方和疗效承诺。</text>
+			</view>
+
+			<view class="empty" v-if="!loading && doctor === null">
+				<text class="emptyText">没拿到这位医生的信息。返回上一页，重新从列表里点进来试试。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 底部唯一主操作：价格常驻，别让用户滚到底才看到 -->
+		<view class="bar" v-if="doctor !== null">
+			<view class="grow">
+				<text class="barPrice" v-if="priceText(doctor.price_cents) !== ''">¥{{ priceText(doctor.price_cents) }}<text class="barUnit"> /次</text></text>
+				<text class="barPrice barUnit" v-else>价格待定</text>
+				<text class="barNote">{{ doctor.name }} · {{ doctor.title }}</text>
+			</view>
+			<button class="barBtn" @click="goOrder">咨询 TA</button>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { hasText } from '@/utils/blank'
+
+	type Doctor = components['schemas']['Doctor']
+
+	const STATUS_TEXT: Record<string, string> = {
+		online: '在线',
+		busy: '忙碌',
+		offline: '离线'
+	}
+
+	const doctorId = ref('')
+	const doctor = ref<Doctor | null>(null)
+	const loading = ref(true)
+	const error = ref('')
+
+	// onLoad 的 options 在 uvue 里是宽松类型，取参数前自己兜底
+	onLoad((options: any) => {
+		const id = options === undefined || options.doctor_id === undefined ? '' : String(options.doctor_id)
+		if (id === '') {
+			loading.value = false
+			error.value = '缺少医生参数，返回上一页重进'
+			return
+		}
+		doctorId.value = id
+		load()
+	})
+
+	/** 契约里这几个字段都可为空，模板不支持 ?.，统一走函数兜底 */
+	const department = computed(() => {
+		if (doctor.value === null) return ''
+		return hasText(doctor.value.department_name)
+			? String(doctor.value.department_name)
+			: doctor.value.department_code
+	})
+
+	/** specialties 可能是 null（openapi 可空字段生成成 string[]），先过滤再渲染 */
+	const specialtyList = computed(() => {
+		if (doctor.value === null) return []
+		const list = doctor.value.specialties
+		return list === undefined || list === null ? [] : list
+	})
+
+	async function load () {
+		error.value = ''
+		try {
+			doctor.value = await api.getDoctor(doctorId.value)
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	function initial (name: string): string {
+		return name === '' ? '医' : name.slice(0, 1)
+	}
+
+	function priceText (cents?: number): string {
+		// 金额单位是分
+		return cents === undefined || cents === null ? '' : (cents / 100).toFixed(2)
+	}
+
+	function minutesText (minutes?: number): string {
+		return minutes === undefined || minutes === null ? '' : String(minutes)
+	}
+
+	function statusText (status?: string): string {
+		return STATUS_TEXT[status === undefined ? '' : status] ?? '离线'
+	}
+
+	function statusClass (status?: string): string {
+		if (status === 'online') return 'status stOnline'
+		if (status === 'busy') return 'status stBusy'
+		return 'status stOffline'
+	}
+
+	function goOrder () {
+		uni.navigateTo({ url: '/pages/order/order?doctor_id=' + doctorId.value })
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.row {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.docAvatar {
+		width: 112rpx;
+		height: 112rpx;
+		border-radius: 24rpx;
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+		font-size: 48rpx;
+		font-weight: bold;
+		text-align: center;
+		line-height: 112rpx;
+		margin-right: 24rpx;
+		flex-shrink: 0;
+	}
+
+	.docName {
+		font-size: 36rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1.3;
+	}
+
+	.docTitle {
+		margin-top: 4rpx;
+		font-size: 26rpx;
+		color: var(--c-text-2);
+	}
+
+	.docMeta {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+		line-height: 1.5;
+	}
+
+	/* 三项指标平铺：数字与单位分层，纵向居中排布 */
+	.docStats {
+		display: flex;
+		flex-direction: row;
+		margin-top: 28rpx;
+		padding-top: 24rpx;
+		border-top: 2rpx solid var(--c-border-weak);
+	}
+
+	.docStat {
+		flex: 1;
+		align-items: center;
+	}
+
+	.docStatVal {
+		font-size: 34rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1.2;
+	}
+
+	.docStatSm {
+		font-size: 28rpx;
+	}
+
+	.docStatDash {
+		color: var(--c-faint);
+	}
+
+	.docStatUnit {
+		font-size: 22rpx;
+		font-weight: normal;
+		color: var(--c-muted);
+	}
+
+	.docStatKey {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+	}
+
+	.docTags {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-bottom: 8rpx;
+	}
+
+	.docTag {
+		margin: 0 10rpx 10rpx 0;
+		padding: 8rpx 18rpx;
+		border-radius: 8rpx;
+		background-color: var(--c-card);
+		font-size: 24rpx;
+		color: var(--c-text-2);
+		border: 2rpx solid var(--c-border);
+	}
+
+	/* 底部固定操作条：父容器正常变高，不用负 margin（触摸框会错位，见 vapor-mode.md） */
+	.bar {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		padding: 20rpx 32rpx 32rpx;
+		background-color: var(--c-card);
+		border-top: 2rpx solid var(--c-border-weak);
+	}
+
+	.barPrice {
+		font-size: 34rpx;
+		font-weight: bold;
+		color: var(--c-danger);
+		line-height: 1.2;
+	}
+
+	.barUnit {
+		font-size: 22rpx;
+		font-weight: normal;
+		color: var(--c-muted);
+	}
+
+	.barNote {
+		margin-top: 4rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+	}
+
+	.barBtn {
+		margin-left: 20rpx;
+		width: 260rpx;
+		height: 88rpx;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		background-color: var(--c-brand);
+		color: var(--c-on-brand);
+		border-radius: 16rpx;
+		font-size: 30rpx;
+		font-weight: 600;
+	}
+</style>

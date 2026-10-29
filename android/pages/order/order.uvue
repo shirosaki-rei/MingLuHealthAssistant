@@ -1,0 +1,381 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">确认下单</text>
+			<text class="hint">核对医生与就诊人后再支付。支付结果以服务端状态为准。</text>
+
+			<!-- 医生摘要 -->
+			<view v-if="doctor !== null" class="cardFlat">
+				<view class="row">
+					<text class="docAvatar">{{ initial(doctor.name) }}</text>
+					<view class="grow">
+						<text class="docName">{{ doctor.name }}<text class="docTitle"> {{ doctor.title }}</text></text>
+						<text class="docMeta" v-if="doctor.hospital">{{ doctor.hospital }}</text>
+						<text class="docMeta" v-if="department !== ''">科室：{{ department }}</text>
+					</view>
+				</view>
+				<view class="docTags" v-if="specialtyList.length > 0">
+					<text class="docTag" v-for="(s, i) in specialtyList" :key="i">{{ s }}</text>
+				</view>
+			</view>
+			<text class="loading" v-else-if="loadingDoctor">正在加载医生信息…</text>
+
+			<!-- 就诊人：上下文必须说清楚，别让用户付错人的钱 -->
+			<text class="section">为谁咨询</text>
+			<view class="cardFlat">
+				<view class="rowBetween">
+					<text class="cardTitle" v-if="patientName !== ''">{{ patientName }}</text>
+					<text class="tag tagBrand" v-if="patientName !== ''">当前就诊人</text>
+				</view>
+				<text class="cardMeta" v-if="patientName !== ''">咨询内容与回复都会归到这份档案下。</text>
+				<text class="warn" v-else-if="session.patientId === ''">还没选就诊人，回首页选一个再进来。</text>
+				<text class="loading" v-else>正在读取就诊人…</text>
+			</view>
+
+			<!-- 费用：只有一项，不用做成一长串明细 -->
+			<text class="section">费用</text>
+			<view class="cardFlat">
+				<view class="rowBetween">
+					<text class="feeKey">单次咨询</text>
+					<text class="price" v-if="priceText(amountCents) !== ''">¥{{ priceText(amountCents) }}</text>
+					<text class="price feeDash" v-else>—</text>
+				</view>
+				<text class="cardMeta" v-if="responseMinutes !== ''">平均 {{ responseMinutes }} 分钟内回复，超时会原路退回。</text>
+			</view>
+
+			<!-- 下单后的状态 -->
+			<block v-if="order !== null">
+				<text class="section">咨询单</text>
+				<view class="cardFlat">
+					<text class="cardMeta">单号 {{ order.id }}</text>
+					<view class="rowBetween statusRow">
+						<text class="cardTitle">状态</text>
+						<text :class="statusClass(order.status)">{{ statusText(order.status) }}</text>
+					</view>
+					<text class="cardMeta" v-if="polling">正在确认支付结果…</text>
+					<text class="cardMeta" v-if="pendingHint">支付结果还没回来，稍后重新进这一页看一眼。</text>
+				</view>
+			</block>
+
+			<view class="callout">
+				<text class="calloutTitle">咨询属于就医路径</text>
+				<text class="calloutDesc">不校验会员状态、不消耗对话额度。平台只做信息整理与咨询撮合，不提供诊断、处方和疗效承诺。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 底部唯一主操作：三种状态三个按钮，靠 v-if 切换（蒸汽模式动态 class 不重算） -->
+		<view class="bar">
+			<button class="barBtn" v-if="order === null" :disabled="creating || doctor === null || session.patientId === ''" @click="create">创建咨询单</button>
+			<button class="barBtn" v-else-if="order.status === 'pending_pay'" :disabled="paying" @click="pay">发起支付{{ priceText(order.amount_cents) === '' ? '' : ' ¥' + priceText(order.amount_cents) }}</button>
+			<button class="barBtn barDone" v-else disabled>{{ statusText(order.status) }}</button>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { hasText } from '@/utils/blank'
+
+	type Doctor = components['schemas']['Doctor']
+	type Order = components['schemas']['Order']
+
+	const ORDER_STATUS: Record<string, string> = {
+		pending_pay: '待支付',
+		paid: '已支付',
+		doctor_replying: '医生回复中',
+		completed: '已完成',
+		refunded: '已退款',
+		cancelled: '已取消'
+	}
+
+	const doctorId = ref('')
+	const doctor = ref<Doctor | null>(null)
+	const loadingDoctor = ref(true)
+	const patientName = ref('')
+	const order = ref<Order | null>(null)
+	const creating = ref(false)
+	const paying = ref(false)
+	const polling = ref(false)
+	const pendingHint = ref(false)
+	const error = ref('')
+
+	/** 没下单时按医生的价展示，下单后以咨询单金额为准 */
+	const amountCents = computed(() => {
+		if (order.value !== null) return order.value.amount_cents
+		return doctor.value === null ? undefined : doctor.value.price_cents
+	})
+
+	const responseMinutes = computed(() => {
+		const d = doctor.value
+		return d === null ? '' : minutesText(d.response_minutes)
+	})
+
+	let timer: any = null
+	let ticks = 0
+	// 慢一次的轮询可能乱序回来，靠它挡掉过期响应，别让旧状态覆盖新状态
+	let pollSeq = 0
+
+	// onLoad 的 options 在 uvue 里是宽松类型，取参数前自己兜底
+	onLoad((options: any) => {
+		const id = options === undefined || options.doctor_id === undefined ? '' : String(options.doctor_id)
+		if (id === '') {
+			loadingDoctor.value = false
+			error.value = '缺少医生参数，返回上一页重进'
+			return
+		}
+		doctorId.value = id
+		loadDoctor()
+		loadPatient()
+	})
+
+	async function loadDoctor () {
+		error.value = ''
+		try {
+			doctor.value = await api.getDoctor(doctorId.value)
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loadingDoctor.value = false
+		}
+	}
+
+	async function loadPatient () {
+		if (session.patientId === '') return
+		try {
+			const p = await api.getPatient(session.patientId)
+			patientName.value = p.name
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	async function create () {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回首页选择就诊人'
+			return
+		}
+		creating.value = true
+		try {
+			order.value = await api.createOrder(doctorId.value, session.patientId)
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			creating.value = false
+		}
+	}
+
+	async function pay () {
+		if (order.value === null) return
+		error.value = ''
+		pendingHint.value = false
+		paying.value = true
+		try {
+			// 渠道默认 wechat；服务端没配真实渠道时是沙箱，直接返回 paid
+			order.value = await api.payOrder(order.value.id)
+		} catch (e) {
+			error.value = errText(e)
+			paying.value = false
+			return
+		}
+		paying.value = false
+		startPolling()
+	}
+
+	/** 支付结果以服务端状态为准，不能以客户端的支付成功回调为准：SDK 的回调只说明用户点了确认，
+	 *  钱到没到、单有没有真付掉，只有服务端的 Order.status 说得清，所以轮询 getOrder */
+	function startPolling () {
+		stopPolling()
+		ticks = 0
+		polling.value = true
+		timer = setInterval(pollOnce, 1000)
+	}
+
+	function stopPolling () {
+		if (timer !== null) {
+			clearInterval(timer)
+			timer = null
+		}
+		polling.value = false
+	}
+
+	async function pollOnce () {
+		const id = order.value === null ? '' : order.value.id
+		if (id === '') {
+			stopPolling()
+			return
+		}
+		ticks = ticks + 1
+		const seq = (pollSeq += 1)
+		try {
+			const o = await api.getOrder(id)
+			if (seq !== pollSeq) return
+			order.value = o
+			if (o.status !== 'pending_pay' || ticks >= 10) {
+				stopPolling()
+				// 真实渠道的回执可能比 10 秒慢，不能一直转下去，留给用户下次进来看
+				if (o.status === 'pending_pay') pendingHint.value = true
+			}
+		} catch (e) {
+			stopPolling()
+			error.value = errText(e)
+		}
+	}
+
+	// 离开页面必须停掉轮询，否则定时器还在打接口
+	onUnload(() => {
+		stopPolling()
+	})
+
+	const department = computed(() => {
+		if (doctor.value === null) return ''
+		return hasText(doctor.value.department_name)
+			? String(doctor.value.department_name)
+			: doctor.value.department_code
+	})
+
+	const specialtyList = computed(() => {
+		if (doctor.value === null) return []
+		const list = doctor.value.specialties
+		return list === undefined || list === null ? [] : list
+	})
+
+	function initial (name: string): string {
+		return name === '' ? '医' : name.slice(0, 1)
+	}
+
+	function statusText (status: string): string {
+		return ORDER_STATUS[status] ?? status
+	}
+
+	function statusClass (status: string): string {
+		if (status === 'pending_pay') return 'statusText stWait'
+		if (status === 'refunded' || status === 'cancelled') return 'statusText stGray'
+		return 'statusText stOk'
+	}
+
+	function priceText (cents?: number): string {
+		// 金额单位是分
+		return cents === undefined || cents === null ? '' : (cents / 100).toFixed(2)
+	}
+
+	function minutesText (minutes?: number): string {
+		return minutes === undefined || minutes === null ? '' : String(minutes)
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.row {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.docAvatar {
+		width: 96rpx;
+		height: 96rpx;
+		border-radius: 24rpx;
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+		font-size: 40rpx;
+		font-weight: bold;
+		text-align: center;
+		line-height: 96rpx;
+		margin-right: 20rpx;
+		flex-shrink: 0;
+	}
+
+	.docName {
+		font-size: 32rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1.3;
+	}
+
+	.docTitle {
+		font-size: 24rpx;
+		font-weight: normal;
+		color: var(--c-muted);
+	}
+
+	.docMeta {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+		line-height: 1.5;
+	}
+
+	.docTags {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-top: 16rpx;
+	}
+
+	.docTag {
+		margin: 0 10rpx 10rpx 0;
+		padding: 6rpx 16rpx;
+		border-radius: 8rpx;
+		background-color: var(--c-card-soft);
+		font-size: 22rpx;
+		color: var(--c-text-2);
+	}
+
+	.statusRow {
+		margin-top: 16rpx;
+	}
+
+	.feeKey {
+		font-size: 28rpx;
+		color: var(--c-text);
+	}
+
+	.feeDash {
+		color: var(--c-faint);
+	}
+
+	.bar {
+		padding: 20rpx 32rpx 32rpx;
+		background-color: var(--c-card);
+		border-top: 2rpx solid var(--c-border-weak);
+	}
+
+	.barBtn {
+		height: 88rpx;
+		align-items: center;
+		justify-content: center;
+		background-color: var(--c-brand);
+		color: var(--c-on-brand);
+		border-radius: 16rpx;
+		font-size: 30rpx;
+		font-weight: 600;
+	}
+
+	.barDone {
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+	}
+</style>

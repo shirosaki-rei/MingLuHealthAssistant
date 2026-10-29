@@ -1,0 +1,380 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">健康时间线</text>
+			<text class="hint">咨询、报告、预问诊、测量、用药都汇总到这里，新的在前。可以导出成链接发给医生。</text>
+
+			<!-- 类型筛选：全部 / 咨询 / 报告 / 预问诊 / 测量 / 用药 -->
+			<view class="chipRow">
+				<view v-for="f in filters" :key="f.value" class="chipItem">
+					<button class="chipOn" v-if="filter === f.value" @click="pickFilter(f.value)">{{ f.label }}</button>
+					<button class="chip" v-else @click="pickFilter(f.value)">{{ f.label }}</button>
+				</view>
+			</view>
+
+			<text class="loading" v-if="loading">加载中…</text>
+
+			<view class="empty" v-if="!loading && shown.length === 0">
+				<text class="emptyText">这个筛选下还没有记录。换个类型看看，或先做一次预问诊。</text>
+			</view>
+
+			<!-- 日期分组：同一天的记录归到一起，不用每条都看一遍完整时间 -->
+			<block v-for="g in groups" :key="g.day">
+				<view class="dayHead">
+					<text class="dayText">{{ g.day }}</text>
+					<text class="dayLine"></text>
+				</view>
+
+				<view v-for="ev in g.items" :key="ev.id" class="eventCard">
+					<view class="row">
+						<text class="type" :class="typeClass(ev.type)">{{ typeLabel(ev.type) }}</text>
+						<text class="time">{{ hm(ev.occurred_at) }}</text>
+						<text class="del" @click="askRemove(ev.id)">删除</text>
+					</view>
+					<text class="cardTitle">{{ ev.title }}</text>
+					<text class="cardMeta" v-if="ev.summary !== undefined && ev.summary !== ''">{{ ev.summary }}</text>
+				</view>
+			</block>
+
+			<button class="btn ghost" v-if="hasMore" :disabled="loadingMore" @click="loadMore">
+				{{ loadingMore ? '加载中…' : '加载更多' }}
+			</button>
+
+			<!-- 导出单独一块，不和列表混在一起 -->
+			<view class="exportCard">
+				<text class="cardTitle">导出就诊摘要</text>
+				<text class="cardMeta">生成一个 7 天内有效的链接，可以直接发给医生看。</text>
+				<button class="btn" :disabled="exporting || events.length === 0" @click="exportIt">
+					{{ exporting ? '生成中…' : '生成导出链接' }}
+				</button>
+				<text class="hint" v-if="events.length === 0">还没有可导出的内容。聊几句、做一次预问诊或上传报告后再来。</text>
+
+				<view class="linkBox" v-if="exportUrl !== ''">
+					<text class="cardMeta link">{{ exportUrl }}</text>
+					<text class="cardMeta">有效期至：{{ exportExpire }}</text>
+					<button class="btn ghost" @click="copyUrl">复制链接</button>
+				</view>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+
+	type TimelineEvent = components['schemas']['TimelineEvent']
+
+	const PAGE_SIZE = 20
+
+	const TYPE_LABEL: Record<string, string> = {
+		consult: '咨询',
+		report: '报告',
+		preconsult: '预问诊',
+		measurement: '测量',
+		medication: '用药'
+	}
+
+	/** 类型徽标配色。都是「建好后不会变」的静态 class，不走动态 :class（蒸汽模式不重算） */
+	const TYPE_CLASS: Record<string, string> = {
+		consult: 'type typeBrand',
+		report: 'type typeWarn',
+		preconsult: 'type typeBrand',
+		measurement: 'type typeOk',
+		medication: 'type typeMuted'
+	}
+
+	const filters: { value: string; label: string }[] = [
+		{ value: '', label: '全部' },
+		{ value: 'consult', label: '咨询' },
+		{ value: 'report', label: '报告' },
+		{ value: 'preconsult', label: '预问诊' },
+		{ value: 'measurement', label: '测量' },
+		{ value: 'medication', label: '用药' }
+	]
+
+	const events = ref<TimelineEvent[]>([])
+	const page = ref(1)
+	const hasMore = ref(false)
+	const loading = ref(false)
+	const loadingMore = ref(false)
+	const exporting = ref(false)
+	const exportUrl = ref('')
+	const exportExpire = ref('')
+	const error = ref('')
+	const filter = ref('')
+
+	const shown = computed(() => {
+		const f = filter.value
+		if (f === '') return events.value
+		const out: TimelineEvent[] = []
+		for (const ev of events.value) {
+			if (ev.type === f) out.push(ev)
+		}
+		return out
+	})
+
+	/** 按「YYYY-MM-DD」分组，保持服务端返回的顺序（新的在前） */
+	const groups = computed(() => {
+		const out: { day: string; items: TimelineEvent[] }[] = []
+		for (const ev of shown.value) {
+			const day = dayOf(ev.occurred_at)
+			const last = out.length === 0 ? null : out[out.length - 1]
+			if (last !== null && last.day === day) {
+				last.items.push(ev)
+			} else {
+				out.push({ day, items: [ev] })
+			}
+		}
+		return out
+	})
+
+	function typeLabel (type: string): string {
+		return TYPE_LABEL[type] ?? type
+	}
+
+	function typeClass (type: string): string {
+		return TYPE_CLASS[type] ?? 'type typeMuted'
+	}
+
+	/** ISO 8601 → 今天 / 昨天 / MM-DD */
+	function dayOf (iso: string): string {
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso.slice(0, 10)
+		const now = new Date()
+		const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+		if (same(d, now)) return '今天'
+		const yesterday = new Date(now.getTime() - 24 * 3600 * 1000)
+		if (same(d, yesterday)) return '昨天'
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return (d.getMonth() + 1) + '月' + d.getDate() + '日'
+	}
+
+	/** ISO 8601 → HH:mm，日期已经在分组头上了，这里只留时刻 */
+	function hm (iso: string): string {
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+
+	/** ISO 8601 → YYYY-MM-DD HH:mm；解析不了就原样返回，别显示 NaN */
+	function fmt (iso: string): string {
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+
+	onLoad(() => {
+		load(true)
+	})
+
+	function pickFilter (value: string) {
+		filter.value = value
+	}
+
+	async function load (reset: boolean) {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回首页选择就诊人'
+			return
+		}
+		if (reset) {
+			page.value = 1
+			loading.value = true
+		} else {
+			loadingMore.value = true
+		}
+		try {
+			const res = await api.timeline(session.patientId, { page: page.value, page_size: PAGE_SIZE })
+			// 服务端已按 occurred_at 倒序返回，翻页直接往后接
+			if (reset) {
+				events.value = res.items
+				page.value = 2
+			} else {
+				events.value = events.value.concat(res.items)
+				page.value = page.value + 1
+			}
+			hasMore.value = res.has_more
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+			loadingMore.value = false
+		}
+	}
+
+	function loadMore () {
+		load(false)
+	}
+
+	function askRemove (eventId: string) {
+		uni.showModal({
+			title: '删除这条记录？',
+			content: '删除后不再出现在时间线，也不进导出摘要',
+			success: (r: any) => {
+				if (r.confirm !== true) return
+				remove(eventId)
+			}
+		})
+	}
+
+	async function remove (eventId: string) {
+		error.value = ''
+		try {
+			await api.deleteTimelineEvent(eventId)
+			events.value = events.value.filter(e => e.id !== eventId)
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	async function exportIt () {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回首页选择就诊人'
+			return
+		}
+		exporting.value = true
+		try {
+			// 导出是就医路径数据，服务端不校验会员，客户端也不做付费拦截
+			const res = await api.exportTimeline(session.patientId)
+			exportUrl.value = res.url
+			exportExpire.value = fmt(res.expires_at)
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			exporting.value = false
+		}
+	}
+
+	function copyUrl () {
+		uni.setClipboardData({
+			data: exportUrl.value,
+			success: () => {
+				uni.showToast({ title: '已复制', icon: 'none' })
+			}
+		})
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.chipRow {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-bottom: 12rpx;
+	}
+
+	/* 日期分组头：一条横线把同一天的记录圈起来 */
+	.dayHead {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin: 24rpx 0 12rpx;
+	}
+
+	.dayText {
+		font-size: 24rpx;
+		font-weight: 600;
+		color: var(--c-muted);
+		margin-right: 16rpx;
+	}
+
+	.dayLine {
+		flex: 1;
+		height: 2rpx;
+		background-color: var(--c-border-mid);
+	}
+
+	.eventCard {
+		padding: 24rpx 28rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		margin-bottom: 12rpx;
+		border: 2rpx solid var(--c-border);
+	}
+
+	.row {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.type {
+		padding: 5rpx 14rpx;
+		border-radius: 8rpx;
+		font-size: 22rpx;
+		font-weight: 600;
+	}
+
+	.typeBrand {
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+	}
+
+	.typeWarn {
+		background-color: var(--c-warn-bg);
+		color: var(--c-warn);
+	}
+
+	.typeOk {
+		background-color: var(--c-mint);
+		color: var(--c-ok);
+	}
+
+	.typeMuted {
+		background-color: var(--c-gray-bg);
+		color: var(--c-muted);
+	}
+
+	.time {
+		margin-left: 12rpx;
+		font-size: 22rpx;
+		color: var(--c-faint);
+	}
+
+	.del {
+		margin-left: auto;
+		font-size: 24rpx;
+		color: var(--c-danger);
+		padding: 10rpx;
+	}
+
+	/* 导出单独一块，浅底和列表区分开 */
+	.exportCard {
+		margin-top: 24rpx;
+		padding: 28rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-card-soft);
+	}
+
+	.linkBox {
+		margin-top: 20rpx;
+		padding-top: 20rpx;
+		border-top: 2rpx solid var(--c-border-mid);
+	}
+
+	.link {
+		color: var(--c-brand);
+		line-height: 1.6;
+	}
+</style>

@@ -1,0 +1,35 @@
+# 契约是唯一真相源，所以这里同时守住三件事：
+# 1. openapi.yaml 能解析、能 lint
+# 2. 后端 31 个测试通过（含 12 条付费墙契约测试）
+# 3. requirements.txt 真的能装（这条以前从没被执行过，导致留了个不存在的 fastapi 版本）
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: openapi.yaml 可解析
+        run: python -c "import yaml;yaml.safe_load(open('contracts/openapi.yaml',encoding='utf-8'))"
+      - name: redocly lint
+        run: npx --yes @redocly/cli@latest lint contracts/openapi.yaml
+
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 依赖能装上
+        run: pip install -r services/api/requirements.txt
+      - name: 测试
+        working-directory: services/api
+        run: python -m pytest

@@ -1,0 +1,65 @@
+<template>
+	<view class="page">
+		<!-- 协议全文。不用 uvue 把条款抄一遍：二百多行带表格，抄了就有两份真相源。
+		     web-view 的 src 支持 /static 下的本地路径（官方「src路径支持说明」），
+		     html 由 scripts/legal2html.py 从 docs/legal/*.md 生成，编译时一起打进包。 -->
+		<!-- #ifdef MP -->
+		<!-- 小程序端不给看：web-view 在小程序上只认业务域名，/static 本地路径加载不出来，
+		     点了只会白屏。沿用「健康/提醒」那两块的套路给句话，别假装能看。 -->
+		<view class="mpTip">
+			<text class="mpTipText">协议全文请在明路 App 内查看。</text>
+		</view>
+		<!-- #endif -->
+		<!-- #ifndef MP -->
+		<web-view class="web" :src="url" />
+		<!-- #endif -->
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { ref } from 'vue'
+
+	/** doc 参数 → 本地文件。白名单而不是直接把 query 当 src：
+	    这个页面的入口在登录页，谁都能带参数进来，不能变成任意网页容器。 */
+	const DOCS: Record<string, { url: string; title: string }> = {
+		agreement: { url: '/static/legal/user-agreement.html', title: '用户协议' },
+		privacy: { url: '/static/legal/privacy-policy.html', title: '隐私政策' }
+	}
+
+	const url = ref('')
+
+	// onLoad 的 options 在 uvue 里是宽松类型，取参数前自己兜底（doctor.uvue 同因）
+	onLoad((options: any) => {
+		const doc = options === undefined || options.doc === undefined ? '' : String(options.doc)
+		const hit = DOCS[doc] ?? DOCS.agreement
+		url.value = hit.url
+		uni.setNavigationBarTitle({ title: hit.title })
+	})
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.web {
+		flex: 1;
+		min-height: 0;
+	}
+
+	.mpTip {
+		flex: 1;
+		align-items: center;
+		justify-content: center;
+		padding: 80rpx;
+	}
+
+	.mpTipText {
+		font-size: 28rpx;
+		color: var(--c-muted);
+		text-align: center;
+		line-height: 1.6;
+	}
+</style>

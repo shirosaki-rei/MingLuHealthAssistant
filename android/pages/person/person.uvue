@@ -1,0 +1,342 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<view class="card" @tap="goAccount">
+				<view class="row">
+					<image v-if="avatarUrl !== ''" class="avatarImg" :src="avatarUrl" mode="aspectFill" />
+					<text v-else class="avatar avatarCenter">{{ avatarText }}</text>
+					<view class="grow">
+						<text class="cardTitle">{{ profileName }}</text>
+						<text class="cardMeta">手机号登录</text>
+					</view>
+					<text class="tag tagBrand" v-if="membershipLabel === '生效中'">会员生效中</text>
+					<text class="tag tagMuted" v-else>会员未开通</text>
+				</view>
+			</view>
+
+			<text class="section">健康档案</text>
+			<view class="rows">
+				<!-- 会员入口和 rowBtn 用同一结构：实测只有这种「大触摸区 + @tap」点得动 -->
+				<view class="rowBtn" @tap="go('/pages/membership/membership')">
+					<text class="rowIcon">{{ ic('payments') }}</text>
+					<text class="rowBtnText grow">会员与权益</text>
+					<text class="tag tagMuted" v-if="membershipLabel !== '生效中'">未开通</text>
+					<text class="chev">{{ ic('chevron_right') }}</text>
+				</view>
+				<view class="rowBtn" v-for="r in recordRows" :key="r.url" @tap="go(r.url)">
+					<text class="rowIcon">{{ ic(r.icon) }}</text>
+					<text class="rowBtnText grow">{{ r.label }}</text>
+					<text class="tag tagMuted" v-if="r.badge !== ''">{{ r.badge }}</text>
+					<text class="chev">{{ ic('chevron_right') }}</text>
+				</view>
+			</view>
+
+			<text class="section">对话与记忆</text>
+			<view class="rows">
+				<view class="rowBtn" v-for="r in agentRows" :key="r.url" @tap="go(r.url)">
+					<text class="rowIcon">{{ ic(r.icon) }}</text>
+					<text class="rowBtnText grow">{{ r.label }}</text>
+					<text class="tag tagDanger" v-if="r.badge !== ''">{{ r.badge }}</text>
+					<text class="chev">{{ ic('chevron_right') }}</text>
+				</view>
+			</view>
+
+			<text class="section">外观</text>
+			<!-- 主题三选一。setAppTheme 只有 App 有，小程序/web 跟随宿主，这一节在别端不渲染。
+			     三个等宽按钮无缝拼成一个胶囊，选中段用主色填充。不用 picker——蒸汽模式下
+			     picker 的滚轮点不中（实测点了、滑了都不动）。
+			     选中态必须 v-if 换一整个元素：蒸汽模式动态 :class 不重算（规则 5），
+			     和找医生页科室胶囊 .chip/.chipOn 是同一套写法。 -->
+			<!-- #ifdef APP -->
+			<view class="segBar">
+				<view v-for="(t, i) in THEMES" :key="t.value" class="segCell">
+					<view class="segOn" v-if="i === themeIndex" @tap="pickTheme(i)">
+						<text class="segOnText">{{ t.label }}</text>
+					</view>
+					<view class="seg" v-else @tap="pickTheme(i)">
+						<text class="segText">{{ t.label }}</text>
+					</view>
+				</view>
+			</view>
+			<!-- #endif -->
+
+			<view class="callout">
+				<text class="calloutTitle">就医路径永久免费</text>
+				<text class="calloutDesc">预问诊、症状匹配、找医生与咨询、报告解读、时间线与导出、提醒都不会被会员状态拦截。</text>
+			</view>
+
+			<!-- 协议入口。登录页勾选框处也有一份，这里是登录后唯一能回看的地方——
+			     隐私政策上线前清单第 9 项要求「登录页与我的页均可点达」。
+			     正文由 scripts/legal2html.py 从 docs/legal/*.md 生成，别手改 html。 -->
+			<text class="section">关于</text>
+			<view class="rows">
+				<view class="rowBtn" v-for="r in legalRows" :key="r.url" @tap="go(r.url)">
+					<text class="rowIcon">{{ ic(r.icon) }}</text>
+					<text class="rowBtnText grow">{{ r.label }}</text>
+					<text class="chev">{{ ic('chevron_right') }}</text>
+				</view>
+			</view>
+
+			<!-- 图标+文字的按钮不能做成 <button>：button 里不能有子元素，也不应用图标字体，
+			     字形会用默认字体渲染、直接不显示。按 vapor-mode.md §9 的做法，整行做成带背景的
+			     view + @tap（和 rowBtn 同一种结构，实测点得动）。 -->
+			<view class="btn ghost logoutBtn" @tap="logout">
+				<text class="logoutIcon">{{ ic('logout') }}</text>
+				<text class="logoutText">退出登录</text>
+			</view>
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 底部一级入口。当前页那一项不挂 @tap，图标文字用 *On 变体表示选中（规则 5：
+		     蒸汽模式动态 :class 不重算）。样式在 App.uvue 的 .tabbar 段，全 App 一份。
+		     reLaunch 不用 navigateTo：标签页是平级的，navigateTo 会把页面栈越堆越高。 -->
+		<view class="tabbar">
+			<view class="tab" @tap="switchTab('/pages/home/home')">
+				<text class="tabIcon">{{ ic('home') }}</text>
+				<text class="tabText">首页</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/doctors/doctors')">
+				<text class="tabIcon">{{ ic('travel_explore') }}</text>
+				<text class="tabText">找医生</text>
+			</view>
+			<view class="tabCenter" @tap="switchTab('/pages/chat/chat')">
+				<view class="tabCenterBtn">
+					<text class="tabCenterText">问助手</text>
+				</view>
+				<text class="tabCenterLabel">问助手</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/health/health')">
+				<text class="tabIcon">{{ ic('favorite') }}</text>
+				<text class="tabText">健康</text>
+			</view>
+			<view class="tab">
+				<text class="tabIconOn">{{ ic('person') }}</text>
+				<text class="tabTextOn">我的</text>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { auth, clearAuth } from '@/stores/auth'
+	import { session } from '@/stores/session'
+	import { errText } from '@/utils/apierr'
+	import { ic } from '@/utils/icons'
+	import { hasText } from '@/utils/blank'
+	import { appOnly } from '@/utils/apponly'
+
+	const membershipLabel = ref('—')
+	const pendingMemory = ref(0)
+	const error = ref('')
+	const themeIndex = ref(2)
+
+	/** 主题三选一。setAppTheme 只有 App 有，小程序/web 跟宿主，所以这一节在别端不渲染 */
+	const THEMES = [
+		{ label: '明亮', value: 'light' },
+		{ label: '黑暗', value: 'dark' },
+		{ label: '跟随系统', value: 'auto' }
+	]
+
+	const recordRows = [
+		{ label: '就诊人档案', icon: 'group', url: '/pages/patients/patients', badge: '' },
+		{ label: '健康时间线', icon: 'timeline', url: '/pages/timeline/timeline', badge: '' },
+		{ label: '检查报告', icon: 'description', url: '/pages/report/report', badge: '' },
+		{ label: '健康提醒', icon: 'notifications', url: '/pages/reminder/reminder', badge: '' }
+	]
+
+	/** 待确认的记忆条数直接从列表算，不额外加接口。
+	    角色与语气不在这：它整个搬到了对话页（问助手），跟着对话走比埋在「我的」里好找。 */
+	const agentRows = computed(() => [
+		{
+			label: '助手记住的事',
+			icon: 'psychology',
+			url: '/pages/memory/memory',
+			badge: pendingMemory.value > 0 ? pendingMemory.value + ' 条待确认' : ''
+		}
+	])
+
+	const phoneMasked = computed(() => (auth.user === null ? '' : auth.user.phone_masked))
+
+	/** 协议入口。登录页勾选框处也有一份，这里是登录后唯一能回看的地方。
+	 *  正文由 scripts/legal2html.py 从 docs/legal/*.md 生成，别手改 html。 */
+	const legalRows = [
+		{ label: '用户协议', icon: 'description', url: '/pages/legal/legal?doc=agreement' },
+		{ label: '隐私政策', icon: 'lock', url: '/pages/legal/legal?doc=privacy' }
+	]
+	// 有昵称就显示昵称（账号页可改），没有才退回掩码手机号；头像取昵称首字
+	const avatarText = computed(() => {
+		const n = auth.user === null ? '' : (auth.user.nickname ?? '')
+		return hasText(n) ? n.slice(0, 1) : '明'
+	})
+
+	/* 上传过头像就用图片，否则空串，模板里 v-if 换回首字圆牌 */
+	const avatarUrl = computed(() => (auth.user === null ? '' : (auth.user.avatar_url ?? '')))
+
+	const profileName = computed(() => {
+		const p = auth.user
+		if (p === null) return '明路用户'
+		return hasText(p.nickname) ? p.nickname : p.phone_masked
+	})
+
+	// onPageShow：从子页返回时会员状态可能变了，每次进来重拉
+	onPageShow(() => {
+		loadMembership()
+		loadPending()
+		loadTheme()
+	})
+
+	function loadTheme () {
+		// 取不到时返回空字符串，不是 null
+		const saved = uni.getStorageSync('app_theme')
+		const i = THEMES.findIndex(t => t.value === saved)
+		themeIndex.value = i >= 0 ? i : 2
+	}
+
+	function pickTheme (i: number) {
+		if (i === themeIndex.value) return
+		themeIndex.value = i
+		uni.setStorageSync('app_theme', THEMES[i].value)
+		uni.setAppTheme({ theme: THEMES[i].value })
+	}
+
+	async function loadMembership () {
+		try {
+			const m = await api.getMembership()
+			membershipLabel.value = m.status === 'active' ? '生效中' : '未开通'
+		} catch (e) {
+			membershipLabel.value = '—'
+		}
+	}
+
+	async function loadPending () {
+		if (session.patientId === '') return
+		try {
+			const res = await api.listMemories(session.patientId)
+			pendingMemory.value = res.items.filter(m => !hasText(m.confirmed_at)).length
+		} catch (e) {
+			// 徽章是附属信息，拉不到不影响页面
+		}
+	}
+
+	function go (url: string) {
+		if (appOnly(url)) return
+		uni.navigateTo({ url })
+	}
+
+	function goAccount () {
+		uni.navigateTo({ url: '/pages/account/account' })
+	}
+
+	// 底部标签栏：平级页面，reLaunch 清掉页面栈，返回键直接退出而不是逐层回退
+	function switchTab (url: string) {
+		if (appOnly(url)) return
+		uni.reLaunch({ url })
+	}
+
+	function logout () {
+		uni.showModal({
+			title: '退出登录',
+			content: '退出后需要重新用手机号登录，本地数据不会丢。',
+			success: (r: any) => {
+				if (r.confirm !== true) return
+				clearAuth()
+				uni.reLaunch({ url: '/pages/login/login' })
+			}
+		})
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 24rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.avatarCenter {
+		margin-right: 20rpx;
+	}
+
+	/* 上传了头像就换成图片。单独一个类，不去覆盖全局 .avatar 的宽高 */
+	.avatarImg {
+		width: 72rpx;
+		height: 72rpx;
+		border-radius: 50%;
+		margin-right: 20rpx;
+		flex-shrink: 0;
+	}
+
+	/* 边框必须有：亮色主题 --c-page #FBFCF9 和 --c-card #FFFFFF 只差 4/255，
+	   5% 的投影等于没有，整块会浮在同样颜色的背景上看不出边界（原型的 .menu-group
+	   本来就带 1px 边框，是我们漏了）。 */
+	.rows {
+		border-radius: 20rpx;
+		background-color: var(--c-card);
+		overflow: hidden;
+		border: 2rpx solid var(--c-border);
+		box-shadow: 0 2rpx 6rpx var(--c-shadow), 0 8rpx 24rpx var(--c-shadow);
+	}
+
+	.rowBtn {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		padding: 28rpx 28rpx;
+	}
+
+	.rowIcon {
+		width: 56rpx;
+		font-family: MingluIcons;
+		font-size: 42rpx;
+		line-height: 1;
+		color: var(--c-brand);
+	}
+
+	.rowBtnText {
+		font-size: 28rpx;
+		color: var(--c-text);
+	}
+
+	.chev {
+		font-family: MingluIcons;
+		font-size: 32rpx;
+		line-height: 1;
+		color: var(--c-faint);
+	}
+
+	/* 退出登录：图标+文字，必须自己声明 flex 横向排列。
+	   不动 .btn——它是给原生 <button> 用的，加 display:flex 怕影响原生居中。 */
+	.logoutBtn {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.logoutIcon {
+		font-family: MingluIcons;
+		font-size: 36rpx;
+		line-height: 1;
+		margin-right: 12rpx;
+		color: var(--c-brand);
+	}
+
+	.logoutText {
+		font-size: 30rpx;
+		font-weight: 600;
+		color: var(--c-brand);
+	}
+</style>

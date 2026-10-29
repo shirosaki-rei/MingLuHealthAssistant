@@ -1,0 +1,375 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<!-- 步骤条：三段固定，当前段换一整个元素（蒸汽模式动态 class 不重算，见 docs/agent/vapor-mode.md） -->
+			<view class="steps">
+				<view class="stepOn" v-if="stepIndex === 1">
+					<text class="stepNumOn">1</text>
+					<text class="stepLabelOn">主诉</text>
+				</view>
+				<view class="stepOff" v-else>
+					<text class="stepNumOff">1</text>
+					<text class="stepLabelOff">主诉</text>
+				</view>
+				<view class="stepOn" v-if="stepIndex === 2">
+					<text class="stepNumOn">2</text>
+					<text class="stepLabelOn">追问</text>
+				</view>
+				<view class="stepOff" v-else>
+					<text class="stepNumOff">2</text>
+					<text class="stepLabelOff">追问</text>
+				</view>
+				<view class="stepOn" v-if="stepIndex === 3">
+					<text class="stepNumOn">3</text>
+					<text class="stepLabelOn">确认</text>
+				</view>
+				<view class="stepOff" v-else>
+					<text class="stepNumOff">3</text>
+					<text class="stepLabelOff">确认</text>
+				</view>
+			</view>
+
+			<!-- 第 1 步：主诉 -->
+			<block v-if="step === 'complaint'">
+				<text class="h1">先说说哪里不舒服</text>
+				<text class="hint">明路会追问 3～5 个问题，把你的回答整理成一份症状记录。确认后写入健康时间线，可随时删除。</text>
+				<textarea class="ta" placeholder="例如：头晕乏力五天，早上起床时明显" :value="complaint" @input="onComplaint" />
+				<button class="btn" :disabled="starting" @click="start">{{ starting ? '开始中…' : '开始问诊' }}</button>
+			</block>
+
+			<!-- 第 2 步：逐题回答 -->
+			<block v-else-if="step === 'asking'">
+				<text class="h2">{{ roundLabel }}</text>
+				<text class="q">{{ current === null ? '' : current.text }}</text>
+				<text class="hint" v-if="current !== null && current.type === 'single'">只选一项，关系到优先看哪个科。</text>
+				<text class="hint" v-else-if="current !== null && current.type === 'multiple'">可以多选，选完一起提交。</text>
+
+				<view v-if="current !== null && current.type === 'single'" class="opts">
+					<view v-for="(o, i) in current.options" :key="i" class="opt" @tap="pickAnswer(o)"><text class="optText">{{ o }}</text><text class="optCheck" v-if="answer === o">&#10003;</text></view>
+				</view>
+
+				<view v-else-if="current !== null && current.type === 'multiple'" class="opts">
+					<view v-for="(o, i) in current.options" :key="i" class="opt" @tap="toggleMulti(o)"><text class="optText">{{ o }}</text><text class="optCheck" v-if="multi.indexOf(o) >= 0">&#10003;</text></view>
+				</view>
+
+				<input
+					v-else-if="current !== null"
+					class="input"
+					:type="current.type === 'number' ? 'number' : 'text'"
+					:placeholder="current.type === 'number' ? '请输入数字' : '请输入'"
+					:value="answer"
+					@input="onAnswer"
+				/>
+
+				<button class="btn" :disabled="answering || !canAnswer" @click="submitAnswer">{{ answering ? '提交中…' : '下一题' }}</button>
+			</block>
+
+			<!-- 第 3 步：症状确认 -->
+			<block v-else-if="step === 'confirm'">
+				<text class="h1">症状确认</text>
+				<text class="hint">内容由你的回答整理而成，可以直接改。确认后写入健康时间线，之后也能删除。</text>
+
+				<text class="fieldLabel">主诉</text>
+				<textarea class="ta small" :value="record.chief_complaint" @input="onRec('chief_complaint', $event)" />
+
+				<!-- 既往史这几项经常是空的，先收起，要填再展开 -->
+				<button class="btn ghost" v-if="!showMore" @click="openMore">补充病史（选填）</button>
+
+				<block v-if="showMore">
+					<text class="fieldLabel">现病史</text>
+					<textarea class="ta small" :value="record.present_illness" @input="onRec('present_illness', $event)" />
+					<text class="fieldLabel">既往史</text>
+					<textarea class="ta small" :value="record.past_history" @input="onRec('past_history', $event)" />
+					<text class="fieldLabel">过敏史</text>
+					<textarea class="ta small" :value="record.allergy_history" @input="onRec('allergy_history', $event)" />
+					<text class="fieldLabel">用药史</text>
+					<textarea class="ta small" :value="record.medication_history" @input="onRec('medication_history', $event)" />
+				</block>
+
+				<view class="cardSoft" v-if="record.suggested_departments.length > 0">
+					<text class="h3">建议科室</text>
+					<view class="chipRow">
+						<text class="tag tagBrand chipItem" v-for="(d, i) in record.suggested_departments" :key="i">{{ d }}</text>
+					</view>
+					<text class="cardMeta">确认后去匹配科室，可按症状再核一遍，再找该科室的医生咨询。</text>
+				</view>
+
+				<button class="btn" :disabled="confirming" @click="confirm">{{ confirming ? '确认中…' : '确认' }}</button>
+				<button class="btn ghost" @click="restart">重新问一次</button>
+			</block>
+
+			<view class="redflag" v-if="redflag !== ''">
+				<text class="redflagText">{{ redflag }}</text>
+				<text class="redflagHint">情况可能紧急，请尽快就医或拨打 120。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+
+	type PreConsult = components['schemas']['PreConsult']
+	type Question = components['schemas']['Question']
+	type MedicalRecord = components['schemas']['MedicalRecord']
+
+	type Step = 'complaint' | 'asking' | 'confirm'
+	/** 确认页允许用户微调的字段，与契约 preconsult/confirm 的请求体一致 */
+	type RecKey = 'chief_complaint' | 'present_illness' | 'past_history' | 'allergy_history' | 'medication_history'
+
+	const step = ref<Step>('complaint')
+	const complaint = ref('')
+	const sessionId = ref('')
+	const round = ref(0)
+	const current = ref<Question | null>(null)
+	const answer = ref('')
+	const multi = ref<string[]>([])
+	const record = ref<MedicalRecord>(emptyRecord())
+	const redflag = ref('')
+	const error = ref('')
+	const starting = ref(false)
+	const answering = ref(false)
+	const confirming = ref(false)
+	const showMore = ref(false)
+
+	const stepIndex = computed(() => {
+		if (step.value === 'complaint') return 1
+		if (step.value === 'asking') return 2
+		return 3
+	})
+
+	const roundLabel = computed(() => '第 ' + (round.value + 1) + ' 题')
+
+	function emptyRecord (): MedicalRecord {
+		return {
+			session_id: '',
+			chief_complaint: '',
+			present_illness: '',
+			past_history: '',
+			allergy_history: '',
+			medication_history: '',
+			suggested_departments: [],
+			ready_for_confirm: false
+		}
+	}
+
+	const canAnswer = computed(() => {
+		if (current.value === null) return false
+		if (current.value.type === 'multiple') return multi.value.length > 0
+		return answer.value.trim() !== ''
+	})
+
+	function onComplaint (e: any) {
+		complaint.value = e.detail.value
+	}
+
+	function onAnswer (e: any) {
+		answer.value = e.detail.value
+	}
+
+	function onRec (key: RecKey, e: any) {
+		const next = { ...record.value }
+		next[key] = e.detail.value
+		record.value = next
+	}
+
+	function pickAnswer (option: string) {
+		answer.value = option
+	}
+
+	function toggleMulti (option: string) {
+		const idx = multi.value.indexOf(option)
+		if (idx >= 0) {
+			multi.value.splice(idx, 1)
+		} else {
+			multi.value.push(option)
+		}
+	}
+
+	/** 服务端每轮返回 questions，取第一题作为当前题；空数组 = 该结束出病历了 */
+	function takeCurrent (pc: PreConsult) {
+		round.value = pc.round
+		current.value = pc.questions.length > 0 ? pc.questions[0] : null
+		answer.value = ''
+		multi.value = []
+		if (pc.redflag_level !== 'none') {
+			redflag.value = '检测到需要警惕的信号，问诊已中断。'
+		}
+	}
+
+	async function start () {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回到首页选择就诊人'
+			return
+		}
+		if (complaint.value.trim() === '') {
+			error.value = '请描述一下哪里不舒服'
+			return
+		}
+		starting.value = true
+		try {
+			const pc = await api.preconsultStart(session.patientId, complaint.value.trim())
+			sessionId.value = pc.id
+			takeCurrent(pc)
+			step.value = 'asking'
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			starting.value = false
+		}
+	}
+
+	async function submitAnswer () {
+		if (current.value === null) return
+		error.value = ''
+		answering.value = true
+		const value: string | string[] = current.value.type === 'multiple' ? [...multi.value] : answer.value.trim()
+		try {
+			const pc = await api.preconsultAnswer(sessionId.value, current.value.id, value)
+			if (pc.status === 'aborted_redflag') {
+				redflag.value = '检测到需要警惕的信号，问诊已中断。'
+				step.value = 'complaint'
+				return
+			}
+			takeCurrent(pc)
+			if (pc.questions.length === 0) {
+				await finish()
+			}
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			answering.value = false
+		}
+	}
+
+	async function finish () {
+		try {
+			record.value = await api.preconsultFinish(sessionId.value)
+			step.value = 'confirm'
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	/** 确认即落库，然后直接去匹配科室 —— 用户接下来要做的就是找医生，不让他们再点一次 */
+	async function confirm () {
+		error.value = ''
+		confirming.value = true
+		try {
+			await api.preconsultConfirm(sessionId.value, {
+				chief_complaint: record.value.chief_complaint,
+				present_illness: record.value.present_illness,
+				past_history: record.value.past_history ?? '',
+				allergy_history: record.value.allergy_history ?? '',
+				medication_history: record.value.medication_history ?? ''
+			})
+			// 把主诉带过去，匹配页不用再手打一遍
+			uni.redirectTo({
+				url: '/pages/match/match?symptoms=' + encodeURIComponent(record.value.chief_complaint)
+			})
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			confirming.value = false
+		}
+	}
+
+	function restart () {
+		step.value = 'complaint'
+		complaint.value = ''
+		sessionId.value = ''
+		record.value = emptyRecord()
+		redflag.value = ''
+		current.value = null
+		showMore.value = false
+	}
+
+	function openMore () {
+		showMore.value = true
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	/* 步骤条：三段等分，当前段实底、其余描边，连接线用段间距自然形成 */
+	.steps {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin-bottom: 32rpx;
+	}
+
+	.stepOn {
+		flex: 1;
+		align-items: center;
+		padding: 14rpx 0;
+		border-radius: 999rpx;
+		background-color: var(--c-brand);
+		margin-right: 12rpx;
+	}
+
+	.stepOff {
+		flex: 1;
+		align-items: center;
+		padding: 14rpx 0;
+		border-radius: 999rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border);
+		margin-right: 12rpx;
+	}
+
+	.stepNumOn {
+		font-size: 24rpx;
+		font-weight: bold;
+		color: var(--c-on-brand);
+		line-height: 1.2;
+	}
+
+	.stepLabelOn {
+		margin-top: 2rpx;
+		font-size: 22rpx;
+		color: var(--c-on-brand);
+	}
+
+	.stepNumOff {
+		font-size: 24rpx;
+		font-weight: bold;
+		color: var(--c-faint);
+		line-height: 1.2;
+	}
+
+	.stepLabelOff {
+		margin-top: 2rpx;
+		font-size: 22rpx;
+		color: var(--c-faint);
+	}
+
+	.opts {
+		margin-bottom: 16rpx;
+	}
+
+	.chipRow {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-top: 12rpx;
+	}
+</style>

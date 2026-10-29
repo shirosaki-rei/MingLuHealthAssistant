@@ -1,0 +1,339 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">提醒</text>
+			<text class="hint">用药、测量、复诊都可以设提醒。这里列出未来 24 小时内要触发的。</text>
+
+			<text class="section">待触发</text>
+			<view class="empty" v-if="items.length === 0 && !loading">
+				<text class="emptyText">暂无待触发的提醒</text>
+			</view>
+
+			<view class="card" v-for="(r, i) in items" :key="r.id">
+				<view class="row">
+					<text class="grow cardTitle">{{ r.title }}</text>
+					<text class="tag tagBrand">{{ fmt(r.fire_at) }}</text>
+				</view>
+				<text class="cardMeta" v-if="r.content !== undefined && r.content !== ''">{{ r.content }}</text>
+				<button class="del" @click="askRemove(r.id)">删除</button>
+			</view>
+
+			<text class="section">新建提醒</text>
+
+			<text class="fieldLabel">类型</text>
+			<view class="chipRow">
+				<view v-for="k in kinds" :key="k.value" class="chipItem">
+					<button class="chipOn" v-if="kind === k.value" @click="pickKind(k.value)">{{ k.label }}</button>
+					<button class="chip" v-else @click="pickKind(k.value)">{{ k.label }}</button>
+				</view>
+			</view>
+
+			<text class="fieldLabel">标题（必填，不超过 40 字）</text>
+			<input class="input" placeholder="例如：吃降压药" :value="title" @input="onTitle" />
+
+			<!-- 内容框的说明按类型变，选「自定义」就是一条普通提醒内容 -->
+			<text class="fieldLabel">{{ contentLabel }}</text>
+			<textarea class="ta" placeholder="选填，补充说明" :value="content" @input="onContent" />
+
+			<text class="fieldLabel">触发日期</text>
+			<picker mode="date" :value="fireDate" :start="'2000-01-01'" :end="maxDate" @change="onFireDate">
+				<view class="dateBox">
+					<text class="dateText">{{ fireDate }}</text>
+				</view>
+			</picker>
+
+			<text class="fieldLabel">触发时间</text>
+			<picker mode="time" :value="fireTime" @change="onFireTime">
+				<view class="dateBox">
+					<text class="dateText">{{ fireTime }}</text>
+				</view>
+			</picker>
+			<text class="hint">按你所在时区设定，重复规则由服务端展开。提交的时间是 {{ fireAt }}</text>
+
+			<text class="fieldLabel">重复</text>
+			<view class="chipRow">
+				<view v-for="r in recOptions" :key="r.value" class="chipItem">
+					<button class="chipOn" v-if="recMode === r.value" @click="pickRec(r.value)">{{ r.label }}</button>
+					<button class="chip" v-else @click="pickRec(r.value)">{{ r.label }}</button>
+				</view>
+			</view>
+
+			<!-- 每周要选星期，服务端的 recurrence 形如 weekly:mon,wed -->
+			<block v-if="recMode === 'weekly'">
+				<text class="fieldLabel">重复日（至少选一天）</text>
+				<view class="chipRow">
+					<view v-for="d in weekdays" :key="d.value" class="chipItem">
+						<button class="chipOn" v-if="pickedWeekdays.indexOf(d.value) >= 0" @click="toggleWeekday(d.value)">{{ d.label }}</button>
+						<button class="chip" v-else @click="toggleWeekday(d.value)">{{ d.label }}</button>
+					</view>
+				</view>
+			</block>
+
+			<!-- 自定义：直接写服务端的 recurrence 规则 -->
+			<block v-if="recMode === 'custom'">
+				<text class="fieldLabel">自定义规则</text>
+				<input class="input" placeholder="once / daily / weekly:mon,wed" :value="recCustom" @input="onRecCustom" />
+				<text class="hint">按服务端规则原样填写，例如每周一三五写 weekly:mon,wed。</text>
+			</block>
+
+			<button class="btn" :disabled="saving" @click="submit">创建提醒</button>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	// 提醒页。
+	// 服务端是唯一决策源：recurrence 怎么展开、下次几点触发都由服务端算好写进 fire_at，
+	// 客户端只负责把 fire_at 注册成本机精确闹钟。
+	// 本版尚未接原生闹钟插件（minglu-alarm），所以这里只做 CRUD 与展示，不注册系统闹钟。
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+
+	type PendingReminder = components['schemas']['PendingReminder']
+	type Kind = components['schemas']['ReminderCreate']['kind']
+	type RecMode = 'once' | 'daily' | 'weekly' | 'custom'
+
+	const WITHIN_HOURS = 24
+
+	const kinds: { value: Kind; label: string }[] = [
+		{ value: 'medication', label: '用药' },
+		{ value: 'measurement', label: '测量' },
+		{ value: 'followup', label: '复诊' },
+		{ value: 'custom', label: '自定义' }
+	]
+
+	/** 内容框的说明按类型变，选「自定义」时就是一条普通提醒内容 */
+	const CONTENT_LABEL: Record<string, string> = {
+		medication: '用法用量（可留空）',
+		measurement: '测量说明（可留空）',
+		followup: '复诊事项（可留空）',
+		custom: '提醒内容（可留空）'
+	}
+
+	const recOptions: { value: RecMode; label: string }[] = [
+		{ value: 'once', label: '一次' },
+		{ value: 'daily', label: '每日' },
+		{ value: 'weekly', label: '每周' },
+		{ value: 'custom', label: '自定义' }
+	]
+
+	const weekdays: { value: string; label: string }[] = [
+		{ value: 'mon', label: '一' },
+		{ value: 'tue', label: '二' },
+		{ value: 'wed', label: '三' },
+		{ value: 'thu', label: '四' },
+		{ value: 'fri', label: '五' },
+		{ value: 'sat', label: '六' },
+		{ value: 'sun', label: '日' }
+	]
+
+	const items = ref<PendingReminder[]>([])
+	const loading = ref(false)
+	const saving = ref(false)
+	const error = ref('')
+
+	const kind = ref<Kind>('medication')
+	const title = ref('')
+	const content = ref('')
+	const fireDate = ref(todayText())
+	const fireTime = ref('08:00')
+	const recMode = ref<RecMode>('once')
+	const pickedWeekdays = ref<string[]>(['mon'])
+	const recCustom = ref('')
+
+	function todayText (): string {
+		const d = new Date()
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+	}
+
+	/** 设备所在时区偏移，契约要求时间必须带时区 */
+	const tzOffset = computed(() => {
+		const off = -new Date().getTimezoneOffset()
+		const sign = off >= 0 ? '+' : '-'
+		const abs = Math.abs(off)
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return sign + p(Math.floor(abs / 60)) + ':' + p(abs % 60)
+	})
+
+	/** 日期 + 时间 + 时区拼成契约要的 ISO 8601，用户不用手打 */
+	const fireAt = computed(() => fireDate.value + 'T' + fireTime.value + ':00' + tzOffset.value)
+
+	const recurrence = computed(() => {
+		if (recMode.value === 'daily') return 'daily'
+		if (recMode.value === 'weekly') return 'weekly:' + (pickedWeekdays.value.length > 0 ? pickedWeekdays.value.join(',') : 'mon')
+		if (recMode.value === 'custom') return recCustom.value.trim() === '' ? 'once' : recCustom.value.trim()
+		return 'once'
+	})
+
+	const contentLabel = computed(() => CONTENT_LABEL[kind.value] ?? '内容（可留空）')
+
+	const maxDate = computed(() => todayText())
+
+	/** ISO 8601 → MM-DD HH:mm；解析不了就原样返回，别显示 NaN */
+	function fmt (iso: string): string {
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+
+	// onPageShow 而不是 onLoad：契约要求每次进提醒页都拉一次待触发列表
+	onPageShow(() => {
+		load()
+	})
+
+	async function load () {
+		loading.value = true
+		try {
+			const res = await api.pendingReminders(WITHIN_HOURS)
+			items.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	function askRemove (reminderId: string) {
+		uni.showModal({
+			title: '删除这条提醒？',
+			content: '删除后到点不会再提醒',
+			success: (r: any) => {
+				if (r.confirm !== true) return
+				remove(reminderId)
+			}
+		})
+	}
+
+	async function remove (reminderId: string) {
+		error.value = ''
+		try {
+			await api.deleteReminder(reminderId)
+			items.value = items.value.filter(r => r.id !== reminderId)
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	function pickKind (value: Kind) {
+		kind.value = value
+	}
+
+	function pickRec (value: RecMode) {
+		recMode.value = value
+	}
+
+	function toggleWeekday (value: string) {
+		const idx = pickedWeekdays.value.indexOf(value)
+		if (idx >= 0) {
+			pickedWeekdays.value.splice(idx, 1)
+		} else {
+			pickedWeekdays.value.push(value)
+		}
+	}
+
+	function onTitle (e: any) {
+		title.value = e.detail.value
+	}
+	function onContent (e: any) {
+		content.value = e.detail.value
+	}
+	function onFireDate (e: any) {
+		fireDate.value = String(e.detail.value)
+	}
+	function onFireTime (e: any) {
+		fireTime.value = String(e.detail.value)
+	}
+	function onRecCustom (e: any) {
+		recCustom.value = e.detail.value
+	}
+
+	async function submit () {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回首页选择就诊人'
+			return
+		}
+		const t = title.value.trim()
+		if (t === '') {
+			error.value = '填写标题'
+			return
+		}
+		if (t.length > 40) {
+			error.value = '标题不超过 40 字'
+			return
+		}
+		const c = content.value.trim()
+		if (c.length > 200) {
+			error.value = '内容不超过 200 字'
+			return
+		}
+		if (isNaN(new Date(fireAt.value).getTime())) {
+			error.value = '触发时间不合法，重新选一次'
+			return
+		}
+		if (recMode.value === 'weekly' && pickedWeekdays.value.length === 0) {
+			error.value = '每周重复至少选一天'
+			return
+		}
+		saving.value = true
+		try {
+			await api.createReminder({
+				patient_id: session.patientId,
+				kind: kind.value,
+				title: t,
+				// 空内容不传，JSON.stringify 会丢掉 undefined
+				content: c === '' ? undefined : c,
+				fire_at: fireAt.value,
+				recurrence: recurrence.value
+			})
+			title.value = ''
+			content.value = ''
+			recMode.value = 'once'
+			pickedWeekdays.value = ['mon']
+			recCustom.value = ''
+			await load()
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			saving.value = false
+		}
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.chipRow {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-bottom: 16rpx;
+	}
+
+	/* 表单逐行堆，输入框之间要留间距，全局那条没有下边距 */
+	.input {
+		margin-bottom: 24rpx;
+	}
+</style>

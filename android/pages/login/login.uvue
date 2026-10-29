@@ -1,0 +1,234 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<!-- 品牌头：先把「这是什么」说清楚，再谈登录 -->
+			<view class="brand">
+				<text class="h1">明路</text>
+				<text class="hint">AI 健康助手 + 医生咨询撮合。整理信息、提示就医路径，不提供诊断、处方和疗效承诺。</text>
+			</view>
+
+			<view class="cardFlat">
+				<view class="field">
+					<text class="label">手机号</text>
+					<input class="input" type="number" maxlength="11" placeholder="请输入手机号" :value="phone" @input="onPhoneInput" />
+				</view>
+
+				<view class="field">
+					<text class="label">验证码</text>
+					<view class="codeRow">
+						<input class="input codeInput" type="number" maxlength="6" placeholder="6 位验证码" :value="code" @input="onCodeInput" />
+						<button class="btn small" :disabled="smsSending || smsCountdown > 0 || !agreed" @click="sendSms">
+							{{ smsCountdown > 0 ? smsCountdown + 's' : '获取验证码' }}
+						</button>
+					</view>
+				</view>
+
+				<!-- 必须主动勾选：「登录即表示同意」不算有效同意，应用商店审核会打回。
+				     书名号必须是真链接：只给勾选不给看全文，商店审核同样打回，
+				     隐私政策自己的上线前清单第 9 项也要求「登录页与我的页均可点达」。
+				     整行仍挂 @tap（点空白处也勾选，这是原来实测能点的形状）；
+				     两个书名号是独立热区 + @tap.stop，别让点链接顺手把勾选也翻了。
+				     热区形状按 vapor-mode.md §9b：外层 view 有明确高度挂 @tap，
+				     里面只包一个 height:100% 填满它的 text。 -->
+				<view class="agreeRow" @tap="toggleAgree">
+					<text class="agreeBox" v-if="agreed">✓</text>
+					<text class="agreeBoxOff" v-else></text>
+					<text class="agreeText">我已阅读并同意</text>
+					<view class="agreeLink" @tap.stop="openLegal('agreement')">
+						<text class="agreeLinkText">《用户协议》</text>
+					</view>
+					<text class="agreeText">与</text>
+					<view class="agreeLink" @tap.stop="openLegal('privacy')">
+						<text class="agreeLinkText">《隐私政策》</text>
+					</view>
+				</view>
+
+				<button class="btn" :disabled="loading || !agreed" @click="login">登录</button>
+				<text class="error" v-if="error !== ''">{{ error }}</text>
+			</view>
+
+			<text class="note">健康数据只保存在你自己的账号下，可随时在「智能体记忆」里查看、修改和删除。</text>
+			<text class="note">接口地址：{{ BASE_URL }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { ref } from 'vue'
+	import { api } from '@/api'
+	import { BASE_URL } from '@/api/http'
+	import { saveAuth } from '@/stores/auth'
+	import { resetSession } from '@/stores/session'
+	import type { ApiFailure } from '@/api/http'
+
+	const phone = ref('')
+	const code = ref('')
+	const loading = ref(false)
+	const smsSending = ref(false)
+	const smsCountdown = ref(0)
+	const error = ref('')
+	const agreed = ref(false)
+
+	let countdownTimer: number | null = null
+
+	function toggleAgree () {
+		agreed.value = !agreed.value
+	}
+
+	/** 看协议全文。doc 只有 agreement / privacy 两个值，页面里按白名单映射到
+	 *  static/legal/ 下的本地 html——不把 query 直接当 src，别变成任意网页容器。 */
+	function openLegal (doc: string) {
+		uni.navigateTo({ url: '/pages/legal/legal?doc=' + doc })
+	}
+
+	function onPhoneInput (e: any) {
+		phone.value = e.detail.value
+	}
+
+	function onCodeInput (e: any) {
+		code.value = e.detail.value
+	}
+
+	function fail (e: any) {
+		const err = e as ApiFailure
+		// 优先用服务端 message（契约说它可直接展示），网络错误才回落到本地信息
+		error.value = err.message !== '' ? err.message : '网络异常，请稍后重试'
+	}
+
+	async function sendSms () {
+		error.value = ''
+		if (phone.value.length !== 11) {
+			error.value = '请先输入 11 位手机号'
+			return
+		}
+		smsSending.value = true
+		try {
+			await api.sendSms(phone.value)
+			smsCountdown.value = 60
+			countdownTimer = setInterval(() => {
+				smsCountdown.value--
+				if (smsCountdown.value <= 0 && countdownTimer !== null) {
+					clearInterval(countdownTimer)
+					countdownTimer = null
+				}
+			}, 1000)
+		} catch (e) {
+			fail(e)
+		} finally {
+			smsSending.value = false
+		}
+	}
+
+	async function login () {
+		error.value = ''
+		if (phone.value.length !== 11 || code.value.length < 4) {
+			error.value = '请填写手机号与验证码'
+			return
+		}
+		loading.value = true
+		try {
+			const result = await api.login(phone.value, code.value)
+			saveAuth(result.token, result.user)
+			resetSession()
+			uni.reLaunch({ url: '/pages/home/home' })
+		} catch (e) {
+			fail(e)
+		} finally {
+			loading.value = false
+		}
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 80rpx 40rpx 40rpx;
+	}
+
+	.brand {
+		margin-bottom: 40rpx;
+	}
+
+	/* 同意勾选。整行 @tap 是原来实测能点的形状（vapor-mode.md §9b：外层有尺寸挂 @tap）。
+	   书名号是行内独立热区：有明确高度，里面只包一个 height:100% 填满它的 text。 */
+	.agreeRow {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8rpx;
+		padding: 14rpx 0;
+	}
+
+	.agreeBox {
+		width: 32rpx;
+		height: 32rpx;
+		border-radius: 8rpx;
+		background-color: var(--c-brand);
+		color: var(--c-on-brand);
+		font-size: 22rpx;
+		font-weight: bold;
+		text-align: center;
+		line-height: 32rpx;
+		flex-shrink: 0;
+	}
+
+	.agreeBoxOff {
+		width: 32rpx;
+		height: 32rpx;
+		border-radius: 8rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border-x);
+		flex-shrink: 0;
+	}
+
+	.agreeText {
+		margin-left: 14rpx;
+		font-size: 22rpx;
+		color: var(--c-text-2);
+		line-height: 1.5;
+	}
+
+	/* 书名号：品牌色，一眼看出可点。text 必须 height:100% 填满热区，
+	   否则按 §9 那条「view 只包一个 text 收不到点击」会点不动。
+	   不加 text-decoration：蒸汽模式不支持这个属性（编译会打 warning）。 */
+	.agreeLink {
+		height: 48rpx;
+		margin-left: 4rpx;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.agreeLinkText {
+		height: 100%;
+		font-size: 22rpx;
+		color: var(--c-brand);
+		line-height: 48rpx;
+	}
+
+	.field {
+		margin-bottom: 28rpx;
+	}
+
+	.codeRow {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.codeInput {
+		/* 独立 class，不用 .codeRow .input：蒸汽模式不支持后代选择器，那条规则会被
+		   静默丢弃，input 于是保持官方文档写明的默认 width:100%，把按钮挤出屏幕。
+		   可用宽度 = 750 - 40*2(scroll) - 28*2(cardFlat) = 614rpx，
+		   360 + 20 + 230 = 610rpx。原来写 400 时总宽 650rpx 超出 36rpx，
+		   按钮右边被卡片裁掉一截，表现就是「获取验证码显示不全」。 */
+		width: 360rpx;
+		flex-shrink: 0;
+	}
+</style>

@@ -1,0 +1,129 @@
+{
+	"pages": [
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationBarTitleText": "明路"
+			}
+		},
+		{
+			"path": "pages/login/login",
+			"style": {
+				"navigationBarTitleText": "登录"
+			}
+		},
+		{
+			"path": "pages/account/account",
+			"style": {
+				"navigationBarTitleText": "账号信息"
+			}
+		},
+		{
+			"path": "pages/home/home",
+			"style": {
+				"navigationBarTitleText": "明路"
+			}
+		},
+		{
+			"path": "pages/chat/chat",
+			"style": {
+				"navigationBarTitleText": "对话"
+			}
+		},
+		{
+			"path": "pages/preconsult/preconsult",
+			"style": {
+				"navigationBarTitleText": "预问诊"
+			}
+		},
+		{
+			"path": "pages/match/match",
+			"style": {
+				"navigationBarTitleText": "症状匹配科室"
+			}
+		},
+		{
+			"path": "pages/doctors/doctors",
+			"style": {
+				"navigationBarTitleText": "找医生"
+			}
+		},
+		{
+			"path": "pages/doctor/doctor",
+			"style": {
+				"navigationBarTitleText": "医生详情"
+			}
+		},
+		{
+			"path": "pages/order/order",
+			"style": {
+				"navigationBarTitleText": "确认下单"
+			}
+		},
+		{
+			"path": "pages/health/health",
+			"style": {
+				"navigationBarTitleText": "健康"
+			}
+		},
+		{
+			"path": "pages/person/person",
+			"style": {
+				"navigationBarTitleText": "我的"
+			}
+		},
+		{
+			"path": "pages/patients/patients",
+			"style": {
+				"navigationBarTitleText": "就诊人管理"
+			}
+		},
+		{
+			"path": "pages/report/report",
+			"style": {
+				"navigationBarTitleText": "上传报告"
+			}
+		},
+		{
+			"path": "pages/timeline/timeline",
+			"style": {
+				"navigationBarTitleText": "健康时间线"
+			}
+		},
+		{
+			"path": "pages/reminder/reminder",
+			"style": {
+				"navigationBarTitleText": "用药与测量提醒"
+			}
+		},
+		{
+			"path": "pages/membership/membership",
+			"style": {
+				"navigationBarTitleText": "会员"
+			}
+		},
+		{
+			"path": "pages/memory/memory",
+			"style": {
+				"navigationBarTitleText": "智能体记忆"
+			}
+		},
+		{
+			"path": "pages/legal/legal",
+			"style": {
+				"navigationBarTitleText": "协议"
+			}
+		}
+	],
+	"globalStyle": {
+		/* @xxx 引用同级 theme.json 里 light/dark 两套值，
+		   导航栏和页面底色才会跟着主题变。uvue 页面内的颜色走 App.uvue 的 CSS 变量，
+		   两处是分开的，改主题色记得都改。 */
+		"navigationBarTextStyle": "@navigationBarTextStyle",
+		"navigationBarTitleText": "明路",
+		"navigationBarBackgroundColor": "@navigationBarBackgroundColor",
+		"backgroundColor": "@backgroundColor",
+		"backgroundTextStyle": "@backgroundTextStyle"
+	},
+	"uniIdRouter": {}
+}

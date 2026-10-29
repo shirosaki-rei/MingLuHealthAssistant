@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  uni-app x 项目级 AndroidManifest（必须放项目根目录）
+  作用：放行明文 HTTP。Android 9+ 默认禁止 http:// 请求，
+        不放行的话所有请求都会失败并报 errCode=602001（request system error）。
+
+  注意：改动本文件后必须重新打自定义基座才会生效。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="uni.app.UNIDECD040">
+
+    <!-- 本地开发用 http，上线换 https 后可以删掉这一项 -->
+    <application android:usesCleartextTraffic="true" tools:ignore="UnusedAttribute" />
+
+</manifest>

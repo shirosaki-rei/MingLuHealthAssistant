@@ -1,0 +1,412 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">健康</text>
+
+			<!-- 就诊人上下文：指标和记录都按人分开 -->
+			<view v-if="patients.length > 0">
+				<picker class="patientSwitch" :range="patientNames" :value="patientIndex" @change="onPickPatient">
+					<view class="patientSwitchIn">
+						<text class="patientDot">{{ avatarText }}</text>
+						<text class="grow patientSwitchText">{{ patientLine }}</text>
+						<text class="patientArr">&#9662;</text>
+					</view>
+				</picker>
+			</view>
+
+			<view class="empty" v-if="patients.length === 0">
+				<text class="emptyText">还没有就诊人。先建一份档案，健康记录才能按人归拢。</text>
+				<button class="heroBtn emptyBtn" @click="go('/pages/patients/patients')">新建就诊人</button>
+			</view>
+
+			<!-- 近 7 天概览：只用接口真有的数据，不编指标 -->
+			<view class="healthHero" v-if="patients.length > 0">
+				<view class="rowBetween">
+					<text class="heroMeta">近 7 天概览</text>
+					<text class="heroMeta">{{ rangeText }}</text>
+				</view>
+				<text class="heroTitle">持续记录，让变化看得见</text>
+				<text class="heroDesc">健康数据仅用于个人健康管理与就医沟通，不用于诊断。</text>
+				<view class="statRow">
+					<view class="stat">
+						<text class="statVal">{{ weekCount }}</text>
+						<text class="statLabel">近 7 天记录</text>
+					</view>
+					<view class="stat">
+						<text class="statVal">{{ totalCount }}</text>
+						<text class="statLabel">累计记录</text>
+					</view>
+				</view>
+			</view>
+
+			<text class="section">记点什么</text>
+			<view class="tiles">
+				<view v-for="n in navs" :key="n.url" class="tile" @tap="go(n.url)">
+					<view class="tileBox">
+						<text class="tileIcon">{{ ic(n.icon) }}</text>
+						<text class="tileText">{{ n.label }}</text>
+					</view>
+				</view>
+			</view>
+
+			<view class="rowBetween sectionHead">
+				<text class="section">最近记录</text>
+				<button class="textbtn" @click="go('/pages/timeline/timeline')">查看时间线</button>
+			</view>
+			<view class="empty" v-if="events.length === 0">
+				<text class="emptyText">还没有记录。上传一张检验报告，或做一次预问诊，这里就会慢慢长出健康档案。</text>
+			</view>
+			<view v-for="ev in events" :key="ev.id" class="recordRow">
+				<text class="recordDot">{{ typeLabel(ev.type) }}</text>
+				<view class="grow">
+					<text class="cardTitle">{{ ev.title }}</text>
+					<text class="cardMeta">{{ shortTime(ev.occurred_at) }}</text>
+					<text class="cardMeta" v-if="ev.summary !== undefined && ev.summary !== ''">{{ ev.summary }}</text>
+				</view>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 底部一级入口。当前页那一项不挂 @tap，图标文字用 *On 变体表示选中（规则 5：
+		     蒸汽模式动态 :class 不重算）。样式在 App.uvue 的 .tabbar 段，全 App 一份。
+		     reLaunch 不用 navigateTo：标签页是平级的，navigateTo 会把页面栈越堆越高。 -->
+		<view class="tabbar">
+			<view class="tab" @tap="switchTab('/pages/home/home')">
+				<text class="tabIcon">{{ ic('home') }}</text>
+				<text class="tabText">首页</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/doctors/doctors')">
+				<text class="tabIcon">{{ ic('travel_explore') }}</text>
+				<text class="tabText">找医生</text>
+			</view>
+			<view class="tabCenter" @tap="switchTab('/pages/chat/chat')">
+				<view class="tabCenterBtn">
+					<text class="tabCenterText">问助手</text>
+				</view>
+				<text class="tabCenterLabel">问助手</text>
+			</view>
+			<view class="tab">
+				<text class="tabIconOn">{{ ic('favorite') }}</text>
+				<text class="tabTextOn">健康</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/person/person')">
+				<text class="tabIcon">{{ ic('person') }}</text>
+				<text class="tabText">我的</text>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { appOnly } from '@/utils/apponly'
+	import { ic } from '@/utils/icons'
+
+	type Patient = components['schemas']['Patient']
+	type TimelineEvent = components['schemas']['TimelineEvent']
+
+	const patients = ref<Patient[]>([])
+	const events = ref<TimelineEvent[]>([])
+	const total = ref(0)
+	const error = ref('')
+
+	const RELATION: Record<string, string> = {
+		self: '本人',
+		parent: '父/母',
+		child: '子女',
+		spouse: '配偶',
+		other: '其他'
+	}
+
+	const TYPE_LABEL: Record<string, string> = {
+		consult: '咨询',
+		report: '报告',
+		preconsult: '预问诊',
+		measurement: '测量',
+		medication: '用药'
+	}
+
+	const navs = [
+		{ label: '上传报告', icon: 'cloud_upload', url: '/pages/report/report' },
+		{ label: '预问诊', icon: 'assignment', url: '/pages/preconsult/preconsult' },
+		{ label: '用药提醒', icon: 'medication', url: '/pages/reminder/reminder' },
+		{ label: '症状匹配', icon: 'travel_explore', url: '/pages/match/match' }
+	]
+
+	/* 初值必须从 session 取：标签页跳转用 reLaunch，每跳一次页面就整个重建，本地 ref 会回到
+	   ''，loadPatients 第一轮匹配不上就退到「第一个 relation=self 的人」——表现就是
+	   「切个页面就诊人变回本人」。session 由各页同步写一份，就是给这里读的。 */
+	const selectedId = ref(session.patientId)
+
+	const current = computed<Patient | null>(() => {
+		const list = patients.value
+		for (let i = 0; i < list.length; i++) {
+			if (list[i].id === selectedId.value) return list[i]
+		}
+		return null
+	})
+
+	const avatarText = computed(() => {
+		const p = current.value
+		return p === null ? '明' : p.name.slice(0, 1)
+	})
+
+	const patientLine = computed(() => {
+		const p = current.value
+		if (p === null) return '未选择就诊人'
+		return p.name + ' · ' + (RELATION[p.relation] ?? p.relation) + ' 档案'
+	})
+
+	const patientNames = computed(() => patients.value.map(p => p.name + ' · ' + (RELATION[p.relation] ?? p.relation)))
+
+	const patientIndex = computed(() => {
+		const list = patients.value
+		for (let i = 0; i < list.length; i++) {
+			if (list[i].id === selectedId.value) return i
+		}
+		return 0
+	})
+
+	/** 近 7 天的起止日期，只做展示 */
+	const rangeText = computed(() => {
+		const end = new Date()
+		const start = new Date(end.getTime() - 6 * 24 * 3600 * 1000)
+		const p = (d: Date) => (d.getMonth() + 1) + '.' + d.getDate()
+		return p(start) + ' — ' + p(end)
+	})
+
+	const weekCount = computed(() => {
+		const cutoff = Date.now() - 7 * 24 * 3600 * 1000
+		let n = 0
+		for (const ev of events.value) {
+			const t = new Date(ev.occurred_at).getTime()
+			if (!isNaN(t) && t >= cutoff) n = n + 1
+		}
+		return n
+	})
+
+	const totalCount = computed(() => total.value)
+
+	function typeLabel (type: string): string {
+		return TYPE_LABEL[type] ?? type
+	}
+
+	function shortTime (iso: string): string {
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+	}
+
+	onPageShow(() => {
+		loadPatients()
+	})
+
+	async function loadPatients () {
+		try {
+			const res = await api.listPatients()
+			const list = res.items
+			let pick = ''
+			if (list.length === 0) {
+				selectedId.value = ''
+				session.patientId = ''
+			} else {
+				for (let i = 0; i < list.length; i++) {
+					if (list[i].id === selectedId.value) {
+						pick = list[i].id
+						break
+					}
+				}
+				if (pick === '') {
+					for (let i = 0; i < list.length; i++) {
+						if (list[i].relation === 'self') {
+							pick = list[i].id
+							break
+						}
+					}
+				}
+				if (pick === '') pick = list[0].id
+				selectedId.value = pick
+				session.patientId = pick
+			}
+			patients.value = list
+			loadEvents()
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	function onPickPatient (e: any) {
+		const i = Number(e.detail.value)
+		const p = patients.value[i]
+		if (p === undefined) return
+		selectedId.value = p.id
+		session.patientId = p.id
+		loadEvents()
+	}
+
+	async function loadEvents () {
+		if (session.patientId === '') return
+		try {
+			// 拉一页够算概览和铺列表，不做成分页（这一页只是入口）
+			const res = await api.timeline(session.patientId, { page: 1, page_size: 20 })
+			events.value = res.items
+			total.value = res.total
+		} catch (e) {
+			// 概览拉不到不影响下面的入口
+		}
+	}
+
+	function go (url: string) {
+		if (appOnly(url)) return
+		uni.navigateTo({ url })
+	}
+
+	// 底部标签栏：平级页面，reLaunch 清掉页面栈，返回键直接退出而不是逐层回退
+	function switchTab (url: string) {
+		if (appOnly(url)) return
+		uni.reLaunch({ url })
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.patientSwitch {
+		margin: 20rpx 0 20rpx;
+	}
+
+	.patientSwitchIn {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		padding: 20rpx 24rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border);
+	}
+
+	.patientDot {
+		width: 44rpx;
+		height: 44rpx;
+		border-radius: 50%;
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+		font-size: 22rpx;
+		font-weight: bold;
+		text-align: center;
+		line-height: 44rpx;
+		margin-right: 16rpx;
+	}
+
+	.patientSwitchText {
+		font-size: 26rpx;
+		color: var(--c-text-2);
+	}
+
+	.patientArr {
+		font-size: 28rpx;
+		color: var(--c-faint);
+	}
+
+	/* 概览用薄荷底而不是深绿：这页已经有一个深绿焦点卡在首页了，
+	   健康页用浅色承载数据，避免两块深色打架 */
+	.healthHero {
+		padding: 28rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-mint);
+		margin-bottom: 8rpx;
+	}
+
+	.heroMeta {
+		font-size: 22rpx;
+		color: var(--c-mint-text);
+	}
+
+	.heroTitle {
+		margin-top: 14rpx;
+		font-size: 32rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1.4;
+	}
+
+	.heroDesc {
+		margin-top: 10rpx;
+		font-size: 24rpx;
+		color: var(--c-mint-text);
+		line-height: 1.6;
+	}
+
+	.statRow {
+		display: flex;
+		flex-direction: row;
+		margin-top: 20rpx;
+	}
+
+	.stat {
+		flex: 1;
+	}
+
+	.statVal {
+		font-size: 40rpx;
+		font-weight: bold;
+		color: var(--c-text);
+	}
+
+	.statLabel {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-mint-text);
+	}
+
+	.sectionHead {
+		margin-bottom: 0;
+	}
+
+	.emptyBtn {
+		margin-top: 24rpx;
+	}
+
+	.recordRow {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		padding: 24rpx 28rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		margin-bottom: 12rpx;
+		border: 2rpx solid var(--c-border);
+	}
+
+	.recordDot {
+		min-width: 88rpx;
+		margin-right: 20rpx;
+		padding: 5rpx 12rpx;
+		border-radius: 8rpx;
+		font-size: 22rpx;
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+		text-align: center;
+	}
+</style>

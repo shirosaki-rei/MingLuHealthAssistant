@@ -1,0 +1,438 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">就诊人管理</text>
+			<text class="hint">最多 3 位（本人 + 2 位家人），会员可到 6 位。预问诊、时间线和智能体记忆都绑定到具体就诊人。建档与删除都不读会员状态。</text>
+
+			<text class="loading" v-if="loading">加载中…</text>
+			<view class="empty" v-if="!loading && patients.length === 0 && !showForm">
+				<text class="emptyText">还没有就诊人，先新建一个</text>
+			</view>
+
+			<view v-for="p in patients" :key="p.id" class="card">
+				<view class="rowBetween">
+					<text class="cardTitle">{{ p.name }} · {{ relationLabel(p.relation) }}</text>
+					<text class="tag tagBrand" v-if="p.id === currentId">当前使用</text>
+					<text class="tag tagMuted" v-else>未使用</text>
+				</view>
+				<text class="cardMeta">{{ genderLabel(p.gender) }} · {{ birthText(p.birth_date) }}</text>
+				<text class="cardMeta" v-if="bmiLine(p) !== ''">{{ bmiLine(p) }}</text>
+				<text class="cardMeta" v-if="chronicText(p.chronic_conditions) !== ''">既往/慢病：{{ chronicText(p.chronic_conditions) }}</text>
+				<text class="cardMeta" v-if="allergyText(p.allergy_notes) !== ''">过敏：{{ allergyText(p.allergy_notes) }}</text>
+				<text class="note" v-if="filledLine(p) !== ''">{{ filledLine(p) }}</text>
+				<view class="actions">
+					<button class="mini" v-if="p.id !== currentId" @click="usePatient(p)">设为当前</button>
+					<button class="mini" @click="edit(p)">编辑</button>
+					<button class="mini ghost" @click="remove(p)">删除</button>
+				</view>
+			</view>
+
+			<button class="btn" v-if="!showForm" @click="add">新建就诊人</button>
+
+			<view class="card formCard" v-if="showForm">
+				<text class="h2">{{ editingId === '' ? '新建就诊人' : '编辑就诊人' }}</text>
+
+				<text class="fieldLabel">姓名（必填，不超过 20 字）</text>
+				<input class="input" placeholder="请输入姓名" :value="form.name" @input="onForm('name', $event)" />
+
+				<text class="fieldLabel">关系</text>
+				<view class="chipRow">
+					<view v-for="r in relations" :key="r.value" class="chipItem">
+						<button class="chipOn" v-if="form.relation === r.value" @click="pickRelation(r.value)">{{ r.label }}</button>
+						<button class="chip" v-else @click="pickRelation(r.value)">{{ r.label }}</button>
+					</view>
+				</view>
+
+				<text class="fieldLabel">性别</text>
+				<view v-for="g in genders" :key="g.value" class="opt" @tap="pickGender(g.value)">
+					<text class="optText">{{ g.label }}</text>
+					<text class="optCheck" v-if="form.gender === g.value">&#10003;</text>
+				</view>
+
+				<text class="fieldLabel">出生日期</text>
+				<picker mode="date" :value="pickerValue" :start="'1900-01-01'" :end="today" @change="onBirth">
+					<view class="dateBox">
+						<text class="datePh" v-if="form.birth_date === ''">点击选择出生日期</text>
+						<text class="dateText" v-else>{{ form.birth_date }}</text>
+						<text class="dateAge" v-if="age >= 0">{{ age }} 岁</text>
+					</view>
+				</picker>
+				<text class="hint birthHint">年龄由出生日期算出，用来判断是否需要监护人同意。</text>
+
+				<text class="fieldLabel">身高（cm）</text>
+				<input class="input" :type="'number'" placeholder="选填" :value="form.height_cm" @input="onForm('height_cm', $event)" />
+
+				<text class="fieldLabel">体重（kg）</text>
+				<input class="input" :type="'number'" placeholder="选填" :value="form.weight_kg" @input="onForm('weight_kg', $event)" />
+
+				<text class="fieldLabel">既往/慢病（用逗号分隔）</text>
+				<input class="input" placeholder="如：高血压、糖尿病" :value="form.chronic_conditions" @input="onForm('chronic_conditions', $event)" />
+
+				<text class="fieldLabel">过敏备注</text>
+				<textarea class="ta small" placeholder="如：青霉素过敏" :value="form.allergy_notes" @input="onForm('allergy_notes', $event)" />
+
+				<!-- 未成年人建档必须拿到监护人同意；已满 18 岁或没填生日时不强制 -->
+				<view class="switchRow" v-if="editingId === ''">
+					<view class="grow">
+						<text class="switchLabel">监护人已同意</text>
+						<text class="tag tagDanger reqTag" v-if="isMinor">必填</text>
+						<text class="hint" v-if="isMinor">该就诊人未满 18 岁，需监护人同意后才能建档。</text>
+						<text class="hint" v-else-if="age >= 0">已满 18 岁，此项为选填。</text>
+						<text class="hint" v-else>填了出生日期才能判断是否必填。</text>
+					</view>
+					<switch :checked="form.guardian_consent" @change="onConsent" />
+				</view>
+
+				<button class="btn" :disabled="saving" @click="submit">{{ editingId === '' ? '创建' : '保存' }}</button>
+				<button class="btn ghost" @click="cancelForm">取消</button>
+			</view>
+
+			<view class="callout">
+				<text class="calloutTitle">此能力永久免费</text>
+				<text class="calloutDesc">就诊人是就医路径的入口，建档与删除都不读会员状态。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { hasList, hasNum, hasText } from '@/utils/blank'
+
+	type Patient = components['schemas']['Patient']
+	type PatientCreate = components['schemas']['PatientCreate']
+	type PatientUpdate = components['schemas']['PatientUpdate']
+	type Relation = Patient['relation']
+	type Gender = Patient['gender']
+
+	const patients = ref<Patient[]>([])
+	const showForm = ref(false)
+	const editingId = ref('')
+	const loading = ref(false)
+	const saving = ref(false)
+	const error = ref('')
+
+	/* 当前就诊人用本地 ref 渲染，不直接在模板里读 session.patientId：
+	   蒸汽模式下给导入的 reactive 对象赋值，这边的 v-if 实测不重算（home.uvue 同款注释）。
+	   session 仍然写一份，别的页面要读。 */
+	const currentId = ref(session.patientId)
+
+	const relations: { value: Relation; label: string }[] = [
+		{ value: 'self', label: '本人' },
+		{ value: 'parent', label: '父/母' },
+		{ value: 'child', label: '子女' },
+		{ value: 'spouse', label: '配偶' },
+		{ value: 'other', label: '其他' }
+	]
+	const genders: { value: Gender; label: string }[] = [
+		{ value: 'male', label: '男' },
+		{ value: 'female', label: '女' },
+		{ value: 'unknown', label: '未填' }
+	]
+
+	const RELATION: Record<string, string> = { self: '本人', parent: '父/母', child: '子女', spouse: '配偶', other: '其他' }
+	const GENDER: Record<string, string> = { male: '男', female: '女', unknown: '未填' }
+
+	const form = ref({
+		name: '',
+		relation: 'self' as Relation,
+		gender: 'unknown' as Gender,
+		birth_date: '',
+		height_cm: '',
+		weight_kg: '',
+		chronic_conditions: '',
+		allergy_notes: '',
+		guardian_consent: false
+	})
+
+	const emptyForm = () => ({
+		name: '',
+		relation: 'self' as Relation,
+		gender: 'unknown' as Gender,
+		birth_date: '',
+		height_cm: '',
+		weight_kg: '',
+		chronic_conditions: '',
+		allergy_notes: '',
+		guardian_consent: false
+	})
+
+	/** 出生日期 → 周岁。日期不合法或未填返回 -1，调用方按「未知」处理 */
+	const age = computed(() => ageOf(form.value.birth_date))
+
+	/** 只有确凿未满 18 岁才强制监护人同意；生日没填不拦，交给服务端兜 */
+	const isMinor = computed(() => age.value >= 0 && age.value < 18)
+
+	const today = computed(() => {
+		const d = new Date()
+		const p = (n: number) => (n < 10 ? '0' + n : '' + n)
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+	})
+
+	/** picker 的 value 必须是合法日期串，空值传今天，否则原生选择器不认 */
+	const pickerValue = computed(() => (form.value.birth_date === '' ? today.value : form.value.birth_date))
+
+	function ageOf (birth: string | null | undefined): number {
+		if (!hasText(birth)) return -1
+		const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((birth as string).trim())
+		if (m === null) return -1
+		const now = new Date()
+		let a = now.getFullYear() - Number(m[1])
+		// 今年生日还没到就不算一岁
+		if (now.getMonth() + 1 < Number(m[2]) || (now.getMonth() + 1 === Number(m[2]) && now.getDate() < Number(m[3]))) a = a - 1
+		return a
+	}
+
+	// onPageShow 而不是 onLoad：新建/编辑/删除后从表单态返回要刷新列表
+	onPageShow(() => {
+		load()
+	})
+
+	async function load () {
+		loading.value = true
+		try {
+			const res = await api.listPatients()
+			patients.value = res.items
+			// 当前人被删了的话 session 里还留着旧 id，标签会全显示「未使用」
+			if (!res.items.some(p => p.id === currentId.value)) currentId.value = session.patientId
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	/* 切换当前就诊人。home/health 的就诊人选择器是 <picker>，蒸汽模式下滚轮划得动但
+	   @change 不触发、「确定」永远提交打开时的索引（vapor-mode.md §9c）——实测切不了人，
+	   所以切换入口放这里。 */
+	function usePatient (p: Patient) {
+		if (p.id === currentId.value) return
+		currentId.value = p.id
+		session.patientId = p.id
+	}
+
+	function relationLabel (r: string): string {
+		return RELATION[r] ?? r
+	}
+	function genderLabel (g: string): string {
+		return GENDER[g] ?? g
+	}
+	function birthText (d: string | null | undefined): string {
+		if (!hasText(d)) return '出生日期未填'
+		const a = ageOf(d)
+		return a < 0 ? '出生 ' + d : '出生 ' + d + ' · ' + a + ' 岁'
+	}
+	function bmiLine (p: Patient): string {
+		const h = hasNum(p.height_cm) ? p.height_cm + ' cm' : '—'
+		const w = hasNum(p.weight_kg) ? p.weight_kg + ' kg' : '—'
+		return '身高 ' + h + ' · 体重 ' + w
+	}
+	function chronicText (list: string[] | null | undefined): string {
+		return hasList(list) ? (list as string[]).join('、') : ''
+	}
+	function allergyText (s: string | null | undefined): string {
+		return hasText(s) ? (s as string) : ''
+	}
+
+	/** 资料完整度：姓名/性别/生日/身高体重/病史过敏 五项。填满就不显示，别当噪音 */
+	function filledLine (p: Patient): string {
+		let n = 0
+		if (hasText(p.name)) n = n + 1
+		if (hasText(p.gender) && p.gender !== 'unknown') n = n + 1
+		if (hasText(p.birth_date)) n = n + 1
+		if (hasNum(p.height_cm) && hasNum(p.weight_kg)) n = n + 1
+		if (hasList(p.chronic_conditions) || hasText(p.allergy_notes)) n = n + 1
+		return n === 5 ? '' : '资料完整度 ' + n + '/5'
+	}
+
+	// 统一用整体替换而不是 form.value.xxx = yyy：蒸汽模式对 ref 对象内部属性变更
+	// 不响应（PoC 里踩过同样的坑，见 utils/stream.ts 的注释）
+	function pickRelation (value: PatientCreate['relation']) {
+		form.value = { ...form.value, relation: value }
+	}
+
+	function pickGender (value: PatientCreate['gender']) {
+		form.value = { ...form.value, gender: value }
+	}
+
+	function onForm (key: string, e: any) {
+		form.value = { ...form.value, [key]: e.detail.value }
+	}
+
+	/** 日期选择器：detail.value 就是 YYYY-MM-DD，直接落进表单 */
+	function onBirth (e: any) {
+		form.value = { ...form.value, birth_date: String(e.detail.value) }
+	}
+
+	function onConsent (e: any) {
+		form.value = { ...form.value, guardian_consent: e.detail.value }
+	}
+
+	function add () {
+		editingId.value = ''
+		form.value = emptyForm()
+		error.value = ''
+		showForm.value = true
+	}
+
+	function edit (p: Patient) {
+		editingId.value = p.id
+		form.value = {
+			name: p.name,
+			relation: p.relation,
+			gender: p.gender,
+			birth_date: hasText(p.birth_date) ? (p.birth_date as string) : '',
+			height_cm: p.height_cm === undefined ? '' : String(p.height_cm),
+			weight_kg: p.weight_kg === undefined ? '' : String(p.weight_kg),
+			chronic_conditions: hasList(p.chronic_conditions) ? (p.chronic_conditions as string[]).join(', ') : '',
+			allergy_notes: hasText(p.allergy_notes) ? (p.allergy_notes as string) : '',
+			guardian_consent: false
+		}
+		error.value = ''
+		showForm.value = true
+	}
+
+	function cancelForm () {
+		showForm.value = false
+		editingId.value = ''
+		error.value = ''
+	}
+
+	async function submit () {
+		error.value = ''
+		const name = form.value.name.trim()
+		if (name === '') {
+			error.value = '请填写姓名'
+			return
+		}
+		if (name.length > 20) {
+			error.value = '姓名不超过 20 字'
+			return
+		}
+		// 未成年人必须拿到监护人同意；编辑时不改这个字段（PatientUpdate 未开放）
+		if (editingId.value === '' && isMinor.value && !form.value.guardian_consent) {
+			error.value = '该就诊人未满 18 岁，需打开「监护人已同意」'
+			return
+		}
+		const chronic = splitList(form.value.chronic_conditions)
+		saving.value = true
+		try {
+			if (editingId.value === '') {
+				const body: PatientCreate = {
+					name,
+					relation: form.value.relation,
+					gender: form.value.gender,
+					birth_date: blankToUndef(form.value.birth_date),
+					height_cm: toNum(form.value.height_cm),
+					weight_kg: toNum(form.value.weight_kg),
+					chronic_conditions: chronic,
+					allergy_notes: blankToUndef(form.value.allergy_notes),
+					guardian_consent: form.value.guardian_consent
+				}
+				await api.createPatient(body)
+			} else {
+				// 编辑只提交 PatientUpdate 开放的字段，关系/性别/生日/监护人不在其列
+				const body: PatientUpdate = {
+					name,
+					height_cm: toNum(form.value.height_cm),
+					weight_kg: toNum(form.value.weight_kg),
+					chronic_conditions: chronic,
+					allergy_notes: form.value.allergy_notes.trim()
+				}
+				await api.updatePatient(editingId.value, body)
+			}
+			showForm.value = false
+			editingId.value = ''
+			await load()
+		} catch (e) {
+			if ((e as any).code === 'PATIENT_LIMIT_EXCEEDED') {
+				error.value = '最多 6 个就诊人（本人 + 5 位家人）'
+			} else {
+				error.value = errText(e)
+			}
+		} finally {
+			saving.value = false
+		}
+	}
+
+	function remove (p: Patient) {
+		uni.showModal({
+			title: '删除就诊人',
+			content: '确定删除「' + p.name + '」？删除后该档案及其健康数据不可恢复。',
+			success: (r: any) => {
+				if (r.confirm) doRemove(p.id)
+			}
+		})
+	}
+
+	async function doRemove (id: string) {
+		try {
+			await api.deletePatient(id)
+			// 删的是当前选中的就诊人就地清空，避免其它页拿着已删除的 id 去请求
+			if (session.patientId === id) session.patientId = ''
+			await load()
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	function toNum (s: string): number | undefined {
+		const t = s.trim()
+		if (t === '') return undefined
+		const n = Number(t)
+		return isNaN(n) ? undefined : n
+	}
+	function blankToUndef (s: string): string | undefined {
+		const t = s.trim()
+		return t === '' ? undefined : t
+	}
+	function splitList (s: string): string[] {
+		return s.split(/[,，]/).map(x => x.trim()).filter(x => x !== '')
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.actions {
+		display: flex;
+		flex-direction: row;
+		margin-top: 20rpx;
+	}
+
+	.chipRow {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-bottom: 16rpx;
+	}
+
+	.birthHint {
+		margin-top: 10rpx;
+	}
+
+	.reqTag {
+		margin-left: 12rpx;
+	}
+</style>

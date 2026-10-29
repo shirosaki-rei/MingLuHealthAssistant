@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  uni-app x 项目级 AndroidManifest（必须放项目根目录）
+  官方要求：根节点必须有 package 属性且不能为空，建议用云端打包的实际包名。
+  当前包名来自自定义基座：uni.app.UNIDECD040
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="uni.app.UNIDECD040">
+
+    <!-- 精确闹钟：Android 12+ 需 SCHEDULE_EXACT_ALARM，并引导用户授权 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- 通知：Android 13+ 需运行时授权 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 重启后恢复闹钟 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 唤醒 CPU 保证准时 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application>
+        <!-- 闹钟触发时弹通知。加 intent-filter 是为了兼容隐式广播：
+             动态注册的 Receiver 只响应隐式广播，导出仍为 false，外部应用无法触发 -->
+        <receiver
+            android:name="com.minglu.alarm.MingluAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.minglu.alarm.FIRE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 开机后重排未触发的闹钟 -->
+        <receiver
+            android:name="com.minglu.alarm.MingluBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

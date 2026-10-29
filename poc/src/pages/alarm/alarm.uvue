@@ -1,0 +1,301 @@
+<template>
+  <view class="page">
+    <text class="h1">精确闹钟</text>
+    <text class="hint">只在安卓端可用，且必须用自定义基座运行。</text>
+
+    <view class="card">
+      <view class="statusRow">
+        <text class="label">精确闹钟权限</text>
+        <text :class="exactAllowed ? 'ok' : 'bad'">{{ exactAllowed ? '已授权' : '未授权' }}</text>
+      </view>
+      <view class="statusRow">
+        <text class="label">通知权限</text>
+        <text :class="notifyAllowed ? 'ok' : 'bad'">{{ notifyAllowed ? '已开启' : '未开启' }}</text>
+      </view>
+      <view class="statusRow">
+        <text class="label">最近一次触发</text>
+        <text :class="firedAt ? 'ok' : 'muted'">{{ firedAt ? firedAt : '从未触发' }}</text>
+      </view>
+      <view class="statusRow">
+        <text class="label">Receiver 注册</text>
+        <text :class="receiverRegistered ? 'ok' : 'bad'">{{ receiverRegistered ? '已注册' : '未注册' }}</text>
+      </view>
+    </view>
+
+    <button class="btn" @click="refresh">刷新状态</button>
+    <button class="btn ghost" @click="openExactSettings">去开精确闹钟权限</button>
+    <button class="btn ghost" @click="openNotifySettings">去开通知权限</button>
+
+    <text class="label mt">设定闹钟</text>
+    <view class="row">
+      <button class="btn small" @click="setIn(60)">60 秒</button>
+      <button class="btn small" @click="setIn(1800)">30 分</button>
+      <button class="btn small" @click="setIn(28800)">8 小时</button>
+    </view>
+
+    <button class="btn ghost" @click="cancelAll">取消全部测试闹钟</button>
+    <button class="btn ghost" @click="fireNowTest">立即模拟触发（诊断用）</button>
+
+    <view class="card" v-if="result">
+      <text class="label">结果</text>
+      <text class="body">{{ result }}</text>
+    </view>
+
+    <view class="card" v-if="log.length > 0">
+      <text class="label">操作记录</text>
+      <view v-for="(item, i) in log" :key="i" class="logRow">
+        <text class="logText">{{ item }}</text>
+      </view>
+    </view>
+
+    <view class="note">
+      <text class="noteText">点「60 秒」后立刻锁屏。到点后回来看「最近一次触发」：如果显示了时间但没收到通知，就是通知权限没开；如果一直是「从未触发」，是闹钟没设进去或被 ROM 拦了。</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { formatError } from '@/utils/err'
+
+// #ifdef APP
+import {
+  canScheduleExact,
+  setExactAlarm,
+  cancelAlarm,
+  openExactAlarmSettings,
+  areNotificationsEnabled,
+  openNotificationSettings,
+  lastFireAt,
+  fireNow,
+  isReceiverRegistered,
+  ensureReceiver
+} from '@/uni_modules/minglu-alarm'
+// #endif
+
+const exactAllowed = ref(false)
+const notifyAllowed = ref(false)
+const firedAt = ref('')
+const receiverRegistered = ref(false)
+const result = ref('')
+const log = ref<string[]>([])
+
+function push (s: string) {
+  const t = new Date()
+  log.value.unshift(pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds()) + '  ' + s)
+  if (log.value.length > 12) log.value.pop()
+}
+
+function pad (n: number): string {
+  return n < 10 ? '0' + n : String(n)
+}
+
+function refresh () {
+  // #ifdef APP
+  try {
+    exactAllowed.value = canScheduleExact()
+    notifyAllowed.value = areNotificationsEnabled()
+    firedAt.value = lastFireAt()
+    receiverRegistered.value = isReceiverRegistered()
+    push('刷新：闹钟=' + (exactAllowed.value ? '开' : '关') + '，通知=' + (notifyAllowed.value ? '开' : '关') + '，Receiver=' + (receiverRegistered.value ? '已注册' : '未注册'))
+  } catch (e) {
+    push('刷新失败：' + formatError(e))
+  }
+  return
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+function openExactSettings () {
+  // #ifdef APP
+  try {
+    openExactAlarmSettings()
+    push('已跳转精确闹钟设置，回来点「刷新状态」')
+  } catch (e) {
+    push('跳转失败：' + formatError(e))
+  }
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+function openNotifySettings () {
+  // #ifdef APP
+  try {
+    openNotificationSettings()
+    push('已跳转通知设置，回来点「刷新状态」')
+  } catch (e) {
+    push('跳转失败：' + formatError(e))
+  }
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+function setIn (seconds: number) {
+  // #ifdef APP
+  try {
+    const at = Date.now() + seconds * 1000
+    const r = setExactAlarm({
+      id: seconds,
+      triggerAtMs: at,
+      title: '明路提醒',
+      content: seconds >= 3600 ? '8 小时后见' : seconds + ' 秒的测试提醒'
+    })
+    result.value = r.message
+    push('设定 ' + seconds + ' 秒后 → ' + (r.ok ? '成功' : '失败'))
+    if (!r.ok) exactAllowed.value = false
+
+    // 到点后自动刷新一次，方便看「最近一次触发」有没有记录
+    setTimeout(() => {
+      refresh()
+      push('自动刷新：最近触发 ' + (firedAt.value ? firedAt.value : '无记录'))
+    }, (seconds + 5) * 1000)
+  } catch (e) {
+    result.value = '设定异常：' + formatError(e)
+    push(result.value)
+  }
+  return
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+function cancelAll () {
+  // #ifdef APP
+  try {
+    cancelAlarm(60)
+    cancelAlarm(1800)
+    cancelAlarm(28800)
+    push('已取消 60 秒 / 30 分 / 8 小时三个测试闹钟')
+  } catch (e) {
+    push('取消失败：' + formatError(e))
+  }
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+/**
+ * 诊断用：直接发一次广播，不经过 AlarmManager
+ * 有通知 + 最近触发时间更新 → Receiver 正常，问题在闹钟调度
+ * 毫无反应 → Receiver 没注册（manifest 没合并）
+ */
+function fireNowTest () {
+  // #ifdef APP
+  try {
+    fireNow(999, '明路提醒', '这是一条手动触发的测试通知')
+    push('已发送模拟广播，1 秒后刷新状态')
+    setTimeout(() => { refresh() }, 1000)
+  } catch (e) {
+    push('模拟触发异常：' + formatError(e))
+  }
+  return
+  // #endif
+  // #ifndef APP
+  result.value = '该功能仅安卓端可用'
+  // #endif
+}
+
+onMounted(() => {
+  refresh()
+})
+</script>
+
+<style>
+.page {
+  padding: 24rpx;
+  background-color: #e8dcc8;
+}
+.h1 {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #2f4f43;
+}
+.hint {
+  font-size: 22rpx;
+  color: #6b6b6b;
+  margin-top: 8rpx;
+  margin-bottom: 20rpx;
+}
+.card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 20rpx;
+  margin-top: 16rpx;
+}
+.statusRow {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8rpx;
+  padding-bottom: 8rpx;
+}
+.label {
+  font-size: 24rpx;
+  color: #6b6b6b;
+}
+.mt {
+  margin-top: 24rpx;
+}
+.body {
+  font-size: 28rpx;
+  color: #222222;
+}
+.ok {
+  font-size: 28rpx;
+  color: #2f4f43;
+  font-weight: bold;
+}
+.bad {
+  font-size: 28rpx;
+  color: #c0392b;
+  font-weight: bold;
+}
+.muted {
+  font-size: 28rpx;
+  color: #8a8a8a;
+}
+.btn {
+  margin-top: 16rpx;
+  background-color: #2f4f43;
+  color: #ffffff;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+}
+.ghost {
+  background-color: #ffffff;
+  color: #2f4f43;
+}
+.row {
+  display: flex;
+  flex-direction: row;
+}
+.small {
+  flex: 1;
+  margin-right: 12rpx;
+  font-size: 26rpx;
+}
+.logRow {
+  margin-top: 8rpx;
+}
+.logText {
+  font-size: 22rpx;
+  color: #444444;
+}
+.note {
+  margin-top: 20rpx;
+}
+.noteText {
+  font-size: 22rpx;
+  color: #6b6b6b;
+  line-height: 1.6;
+}
+</style>

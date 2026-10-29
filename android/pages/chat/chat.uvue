@@ -1,0 +1,1027 @@
+<template>
+	<!-- root 只负责「内容区 + 底部标签栏」的纵向分配；.page 保持原来的 24rpx 内边距。
+	     不把标签栏塞进 .page：那个内边距会让通栏的标签栏左右各凹进去 24rpx。 -->
+	<view class="root">
+		<view class="page">
+			<!-- 顶栏只剩一行：左边告诉你「在替谁问」，右边三个点收齐所有不属于对话本身的功能。
+			     原来这里是两张条（就诊人 + 角色），各占一行把对话区挤小了。 -->
+			<view class="topRow">
+				<text class="topCtx" v-if="patientLine !== ''">替 {{ patientLine }} 问</text>
+				<text class="topCtx topCtxEmpty" v-else>还没选就诊人</text>
+				<view class="grow"></view>
+				<!-- 三个点自己画：图标字体是子集，加 more_vert 要重新 build 字体（源文件不在库里）。
+				     形状按 §9b 来——外层 view 有尺寸挂 @tap，里面只包一个填满它的子 view，
+				     三个圆点再放进那个子 view 里，不然触摸区会被切碎。 -->
+				<view class="moreBtn" @tap="toggleMenu">
+					<view class="moreDots">
+						<view class="moreDot"></view>
+						<view class="moreDot"></view>
+						<view class="moreDot"></view>
+					</view>
+				</view>
+			</view>
+
+			<!-- 三个点菜单。不用 uni.showActionSheet——蒸汽模式下它的选项行点不动
+			     （vapor-mode.md §9d），自己画。
+			     定位不用 position:absolute（蒸汽模式下没验证过）：mask 是 fixed + 纵向 flex，
+			     用一个 spacer 把菜单顶到标题栏下面，右边靠 align-items:flex-end ——
+			     和底部弹层同一套已验证的写法。 -->
+			<view class="menuMask" v-if="menuOpen" @tap="closeMenu">
+				<view class="menuSpacer"></view>
+				<view class="menu" @tap.stop="keepOpen">
+					<view class="menuRow" @tap="goPatients">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('group') }}</text>
+							<text class="menuText grow">切换就诊人</text>
+							<text class="menuVal">{{ patientName }}</text>
+						</view>
+					</view>
+					<view class="menuRow" @tap="openSheetFromMenu">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('auto_awesome') }}</text>
+							<text class="menuText grow">换个助手</text>
+							<text class="menuVal">{{ personaName }}</text>
+						</view>
+					</view>
+					<view class="menuRow" @tap="goPreconsult">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('assignment') }}</text>
+							<text class="menuText grow">开始预问诊</text>
+						</view>
+					</view>
+					<view class="menuRow" @tap="goDoctors">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('stethoscope') }}</text>
+							<text class="menuText grow">找医生</text>
+						</view>
+					</view>
+				</view>
+			</view>
+
+			<scroll-view class="chat" :scroll-top="scrollTop">
+				<view v-for="(m, i) in msgs" :key="i" :class="m.role === 'user' ? 'msgRow msgMe' : 'msgRow'">
+					<!-- 助手消息带头像。align-items 用 flex-start：气泡三四行时头像要贴着首行，
+					     居中会漂到中间去。 -->
+					<image v-if="m.role !== 'user' && avatar.url !== ''" class="paImg" :src="avatar.url" mode="aspectFill" />
+					<view v-else-if="m.role !== 'user'" class="pa" :style="{ 'background-color': avatar.color }">
+						<text class="paText">{{ avatar.glyph }}</text>
+					</view>
+					<view :class="m.role === 'user' ? 'bubble bubbleMe' : 'bubble bubbleAi'">
+						<text v-if="m.text !== ''" :class="m.role === 'user' ? 'bubbleTextMe' : 'bubbleText'">{{ m.text }}</text>
+						<text v-else class="bubbleText typing">正在输入…</text>
+					</view>
+				</view>
+				<view class="empty" v-if="msgs.length === 0">
+					<text class="emptyText">直接说哪里不舒服就行，不用整理措辞。明路会追问几个问题，再整理成能给医生看的病历。</text>
+				</view>
+			</scroll-view>
+
+			<view class="banner" v-if="redflag !== null">
+				<text class="bannerTitle">{{ redflag.message }}</text>
+				<text class="bannerDesc">建议：{{ redflag.action }}。情况可能紧急，请尽快就医或拨打 120。</text>
+			</view>
+
+			<!-- 医疗边界声明：登录/找医生/医生详情/健康/订单五处都有，对话页之前是唯一没有的
+			     一页——而这里恰恰是 AI 开口的地方。放输入框上方一直可见，不打断对话流
+			     （原型是把同样这句话做成 .insight 卡里的 .source-pill）。 -->
+			<text class="hint chatNote">明路只整理信息、提示就医路径，不提供诊断、处方和疗效承诺。</text>
+
+			<view class="controls">
+				<input class="input" placeholder="说说哪里不舒服" :value="draft" @input="onInput" @confirm="send" />
+				<!-- 图标按钮用 view 不用 <button>：button 里不能有子元素，而且项目实测
+				     图标字体在原生 button 里会用默认字体渲染、直接不显示（person.uvue 退出登录同因）。
+				     形状照 .avatarBtn 来：背景在 view 上，里面放不带背景的 text。 -->
+				<view class="sendBtn" @tap="send">
+					<text class="sendIcon">{{ ic('send') }}</text>
+				</view>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</view>
+
+		<!-- 角色弹层：头像、角色列表、创建自定义角色。不用 uni.showActionSheet——蒸汽模式下
+		     它的选项行点不动（vapor-mode.md §9d）。mask 挂 @tap 且只包一个子 view，
+		     是 §9b 里唯一点得动的形状；里面的行各自 @tap.stop，别让点选角色顺手把弹层关了。
+		     v-if 保证 mask 里始终只有一个孩子。 -->
+		<view class="sheetMask" v-if="sheetOpen" @tap="closeSheet">
+			<!-- 弹层自己也拦一次冒泡：否则点弹层里的空白处（标签、说明文字）也会顺带关掉它，
+			     只有点外面那圈半透明遮罩才关。 -->
+			<view class="sheet" v-if="!showForm" @tap.stop="keepOpen">
+				<view class="sheetHead">
+					<text class="sheetTitle">换个角色陪你</text>
+					<button class="textbtn" @click.stop="closeSheet">完成</button>
+				</view>
+
+				<scroll-view class="sheetScroll" direction="vertical">
+					<!-- 当前助手是谁、长什么样。预设角色只有图（服务端固定下发，不给改）；
+					     自定义角色没过头像审核时显示名字首字，并提示去「创建」里上传。 -->
+					<view class="curRow">
+						<image v-if="avatar.url !== ''" class="paImg paLg" :src="avatar.url" mode="aspectFill" />
+						<view v-else class="pa paLg" :style="{ 'background-color': avatar.color }">
+							<text class="paText paTextLg">{{ avatar.glyph }}</text>
+						</view>
+						<view class="grow">
+							<text class="pName">{{ personaName }}</text>
+							<text class="pMeta">{{ avatarHint }}</text>
+						</view>
+					</view>
+
+					<text class="sheetLabel">角色</text>
+					<button class="btn sheetBtn" @click.stop="openForm">创建自定义角色</button>
+					<text class="hint">自定义角色提交后要审核，通过才能用。头像和人设一起送审。</text>
+
+					<view v-for="r in rows" :key="r.p.id" class="pRow" @tap.stop="use(r.p)">
+						<view class="pRowIn">
+							<image v-if="r.url !== ''" class="paImg paSm" :src="r.url" mode="aspectFill" />
+							<view v-else class="pa paSm" :style="{ 'background-color': r.bg }">
+								<text class="paText">{{ r.glyph }}</text>
+							</view>
+							<view class="grow">
+								<text class="pName">{{ r.p.name }}</text>
+								<text class="pMeta">{{ r.meta }}</text>
+							</view>
+							<text class="tag tagBrand" v-if="r.p.id === session.personaId">使用中</text>
+							<text class="tag tagMuted" v-else>{{ r.custom ? '自定义' : '预设' }}</text>
+						</view>
+					</view>
+					<view class="empty" v-if="rows.length === 0">
+						<text class="emptyText">角色列表还没加载出来</text>
+					</view>
+				</scroll-view>
+				<!-- 选中被拦（审核中/未通过）时的提示。必须放在滚动区**外面**：
+				     放里面会被最后一行挤到弹层外沿，用户点了看不见反馈。
+				     表单那个弹层有自己的一份，两个弹层不同时显示，共用一个 error ref 没问题。 -->
+				<text class="error" v-if="error !== ''">{{ error }}</text>
+			</view>
+
+			<view class="sheet" v-else @tap.stop="keepOpen">
+				<view class="sheetHead">
+					<text class="sheetTitle">创建自定义角色</text>
+					<button class="textbtn" @click.stop="cancelForm">取消</button>
+				</view>
+
+				<scroll-view class="sheetScroll" direction="vertical">
+					<text class="sheetLabel">角色名（≤12 字）</text>
+					<input class="input" placeholder="如：小明" :value="form.name" @input="onForm('name', $event)" />
+
+					<text class="sheetLabel">角色设定（≤12 字）</text>
+					<input class="input" placeholder="如：朋友、姐姐、精灵……" :value="form.species" @input="onForm('species', $event)" />
+
+					<!-- 头像和人设一起提交审核：这里只选图，提交时连同人设一起上传 -->
+					<text class="sheetLabel">角色头像（选填）</text>
+					<view class="avatarPick" @tap="pickFormAvatar">
+						<view class="avatarPickIn">
+							<image v-if="pendingAvatarPath !== ''" class="paImg paSm" :src="pendingAvatarPath" mode="aspectFill" />
+							<view v-else class="pa paSm" :style="{ 'background-color': '#8A9A94' }">
+								<text class="paText">+</text>
+							</view>
+							<text class="avatarPickText grow">{{ pendingAvatarPath === '' ? '从相册选一张' : '已选，提交后可更换' }}</text>
+							<text class="chev">{{ ic('chevron_right') }}</text>
+						</view>
+					</view>
+
+					<button class="btn ghost sheetBtn" v-if="!showMore" @click.stop="openMore">填写更多（选填）</button>
+
+					<block v-if="showMore">
+						<text class="sheetLabel">自称（≤12 字）</text>
+						<input class="input" placeholder="如：人家" :value="form.self_ref" @input="onForm('self_ref', $event)" />
+
+						<text class="sheetLabel">口头禅（≤40 字）</text>
+						<input class="input" placeholder="选填" :value="form.catchphrase" @input="onForm('catchphrase', $event)" />
+
+						<text class="sheetLabel">世界观（≤200 字）</text>
+						<textarea class="ta small" placeholder="选填，描述它怎么看待世界" :value="form.worldview" @input="onForm('worldview', $event)" />
+
+						<text class="sheetLabel">语气标签（逗号分隔，最多 3 个）</text>
+						<input class="input" placeholder="如：温柔、简洁" :value="form.tones" @input="onForm('tones', $event)" />
+					</block>
+
+					<button class="btn sheetBtn" :disabled="creating" @click.stop="create">提交审核</button>
+				</scroll-view>
+				<!-- 提交失败的提示固定在弹层底部（同列表弹层：放滚动区里会被挤到外沿） -->
+				<text class="error" v-if="error !== ''">{{ error }}</text>
+			</view>
+		</view>
+
+		<!-- 底部一级入口。中央「问助手」就是本页，所以那一项不挂 @tap；选中态没有独立变体
+		     ——原型里 assistant-tab 本来就是常亮的主入口。样式在 App.uvue 的 .tabbar 段。
+		     reLaunch 不用 navigateTo：标签页是平级的，navigateTo 会把页面栈越堆越高。 -->
+		<view class="tabbar">
+			<view class="tab" @tap="switchTab('/pages/home/home')">
+				<text class="tabIcon">{{ ic('home') }}</text>
+				<text class="tabText">首页</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/doctors/doctors')">
+				<text class="tabIcon">{{ ic('travel_explore') }}</text>
+				<text class="tabText">找医生</text>
+			</view>
+			<view class="tabCenter">
+				<view class="tabCenterBtn">
+					<text class="tabCenterText">问助手</text>
+				</view>
+				<text class="tabCenterLabel">问助手</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/health/health')">
+				<text class="tabIcon">{{ ic('favorite') }}</text>
+				<text class="tabText">健康</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/person/person')">
+				<text class="tabIcon">{{ ic('person') }}</text>
+				<text class="tabText">我的</text>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { streamChat } from '@/api/chat'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import { isLoggedIn } from '@/stores/auth'
+	import type { components } from '@/types/api'
+	import type { ApiFailure } from '@/api/http'
+	import { hasList, hasText } from '@/utils/blank'
+	import { errText } from '@/utils/apierr'
+	import { appOnly } from '@/utils/apponly'
+	import { ic } from '@/utils/icons'
+	import { avatarOf, type AvatarView } from '@/utils/personaAvatar'
+	import { pickImage } from '@/utils/pickimage'
+
+	type Patient = components['schemas']['Patient']
+	type Persona = components['schemas']['Persona']
+	type PersonaCreate = components['schemas']['PersonaCreate']
+
+	interface Msg { role: 'user' | 'assistant'; text: string }
+
+	interface PersonaRow {
+		p: Persona
+		custom: boolean
+		/** 有图就显示图，没有才用 glyph + bg */
+		url: string
+		glyph: string
+		bg: string
+		/** 种类 + 审核态。合成一行而不是再挂个标签：标签位要被「使用中」占着 */
+		meta: string
+	}
+
+	const REVIEW: Record<string, string> = { pending: '审核中', approved: '已通过', rejected: '未通过' }
+
+	const msgs = ref<Msg[]>([])
+	const draft = ref('')
+	const sending = ref(false)
+	const error = ref('')
+	const scrollTop = ref(0)
+	const redflag = ref<{ message: string; action: string } | null>(null)
+	const patient = ref<Patient | null>(null)
+	const menuOpen = ref(false)
+
+	const presets = ref<Persona[]>([])
+	const mine = ref<Persona[]>([])
+	const sheetOpen = ref(false)
+	const showForm = ref(false)
+	const showMore = ref(false)
+	const creating = ref(false)
+	const avatar = ref<AvatarView>(avatarOf(null))
+	/** 新建中的自定义角色：创建成功后要把头像一起传上去，先记住图片路径 */
+	let pendingAvatarPath = ''
+
+	const form = ref({
+		name: '',
+		species: '',
+		self_ref: '',
+		catchphrase: '',
+		worldview: '',
+		tones: ''
+	})
+
+	let task: { abort: () => void } | null = null
+
+	/** 预设与自定义合成一张列表，各自带个标记，别把同一张卡写两遍 */
+	const rows = computed<PersonaRow[]>(() => {
+		const out: PersonaRow[] = []
+		for (const p of presets.value) out.push(toRow(p, false))
+		for (const p of mine.value) out.push(toRow(p, true))
+		return out
+	})
+
+	const current = computed<Persona | null>(() => {
+		for (const r of rows.value) if (r.p.id === session.personaId) return r.p
+		return null
+	})
+
+	const personaName = computed(() => (current.value === null ? '明路助手' : current.value.name))
+
+	const patientName = computed(() => (patient.value === null ? '未选择' : patient.value.name))
+
+	/** 弹层顶部那句状态。预设角色只说「官方形象」；自定义角色分没传图 / 在审 / 已通过。 */
+	const avatarHint = computed(() => {
+		const p = current.value
+		if (p === null) return '默认风格：温和、简洁'
+		if (!p.is_preset) {
+			if (p.avatar_url !== undefined && p.avatar_url !== null && p.avatar_url !== '') {
+				return '头像已通过审核'
+			}
+			return p.review_status === 'rejected' ? '人设未通过审核，头像不显示' : '还没上传头像，可在「创建自定义角色」里传'
+		}
+		const bits: string[] = ['官方形象']
+		if (hasText(p.species)) bits.push(p.species as string)
+		return bits.join(' · ')
+	})
+
+	const patientLine = computed(() => {
+		const p = patient.value
+		if (p === null) return ''
+		const parts: string[] = [p.name]
+		if (hasList(p.chronic_conditions)) parts.push((p.chronic_conditions as string[]).join('、'))
+		if (hasText(p.allergy_notes)) parts.push(p.allergy_notes as string)
+		return parts.join(' · ')
+	})
+
+	// onPageShow：就诊人可能在首页被换过，每次进来按当前就诊人重取上下文
+	onPageShow(() => {
+		if (session.patientId === '') {
+			patient.value = null
+			return
+		}
+		loadPatient()
+	})
+
+	onLoad(() => {
+		loadPersonas()
+	})
+
+	async function loadPatient () {
+		try {
+			patient.value = await api.getPatient(session.patientId)
+		} catch (e) {
+			// 拉不到只影响顶部那行提示，不拦对话本身
+		}
+	}
+
+	async function loadPersonas () {
+		try {
+			const res = await api.listPersonas()
+			presets.value = res.presets
+			mine.value = res.mine
+			// 默认助手 = 列表里第一个预设（安安）。不显式选中的话服务端用内置默认，
+			// 那套默认没有头像、语气也和预览对不上，所以这里直接落到第一个预设上。
+			if (session.personaId === '' && presets.value.length > 0) {
+				session.personaId = presets.value[0].id
+			}
+		} catch (e) {
+			// 拉不到就沿用默认助手，对话本身不受影响
+		}
+		refreshAvatars()
+	}
+
+	function toRow (p: Persona, custom: boolean): PersonaRow {
+		const a = avatarOf(p)
+		const bits: string[] = []
+		if (hasText(p.species)) bits.push(p.species as string)
+		if (custom) bits.push(REVIEW[p.review_status ?? ''] ?? '')
+		return {
+			p,
+			custom,
+			glyph: a.glyph,
+			bg: a.color,
+			url: a.url,
+			meta: bits.filter(x => x !== '').join(' · ')
+		}
+	}
+
+	/** 当前角色该显示的头像。rows 变了（换角色、新建完、审核状态变）就重算一次，
+	    对话气泡和角色列表都读这一个 ref，不会出现「气泡换了、列表还是旧的」。 */
+	function refreshAvatars () {
+		avatar.value = avatarOf(current.value)
+		// 标题就是助手名字：对话页最该回答「我在跟谁说话」
+		const name = personaName.value
+		uni.setNavigationBarTitle({ title: name })
+	}
+
+	function onInput (e: any) {
+		draft.value = e.detail.value
+	}
+
+	function goPatients () {
+		closeMenu()
+		uni.navigateTo({ url: '/pages/patients/patients' })
+	}
+
+	function goPreconsult () {
+		closeMenu()
+		uni.navigateTo({ url: '/pages/preconsult/preconsult' })
+	}
+
+	function goDoctors () {
+		closeMenu()
+		uni.reLaunch({ url: '/pages/doctors/doctors' })
+	}
+
+	// 底部标签栏：平级页面，reLaunch 清掉页面栈，返回键直接退出而不是逐层回退
+	function switchTab (url: string) {
+		if (appOnly(url)) return
+		uni.reLaunch({ url })
+	}
+
+	// ---------------------------------------------------------------- 右上角菜单
+
+	function toggleMenu () {
+		menuOpen.value = !menuOpen.value
+	}
+
+	function closeMenu () {
+		menuOpen.value = false
+	}
+
+	function openSheetFromMenu () {
+		closeMenu()
+		openSheet()
+	}
+
+	// ---------------------------------------------------------------- 角色弹层
+
+	function openSheet () {
+		showForm.value = false
+		sheetOpen.value = true
+	}
+
+	function closeSheet () {
+		sheetOpen.value = false
+	}
+
+	/** 弹层自己吞掉冒泡：点弹层里的空白处（标签、说明文字）不该顺手把弹层关掉，
+	    只有点外面那圈半透明遮罩才关。 */
+	function keepOpen () {
+	}
+
+	/** 点卡片即切换。不关弹层：让「使用中」标签当场挪过去，比弹个 toast 更看得见。
+	 *  审核中的自定义角色不能选：创建页明写"提交后要审核，通过才能用"，服务端不拦
+	 *  （`_resolve_persona` 只校验所有权），所以这儿是唯一防线。选了也是显示个名字首字，
+	 *  用户会以为"我设的角色生效了"。 */
+	function use (p: Persona) {
+		if (!p.is_preset && p.review_status !== 'approved') {
+			error.value = p.review_status === 'rejected'
+				? '这个人设未通过审核，不能选。去「创建自定义角色」改改再提交。'
+				: '人设还在审核中，通过后才能选。'
+			return
+		}
+		error.value = ''
+		session.personaId = p.id
+		refreshAvatars()
+	}
+
+	function openForm () {
+		form.value = { name: '', species: '', self_ref: '', catchphrase: '', worldview: '', tones: '' }
+		pendingAvatarPath = ''
+		showMore.value = false
+		error.value = ''
+		showForm.value = true
+	}
+
+	function cancelForm () {
+		showForm.value = false
+	}
+
+	function openMore () {
+		showMore.value = true
+	}
+
+	function onForm (key: string, e: any) {
+		// 整体替换：蒸汽模式不响应 ref 对象内部属性变更
+		form.value = { ...form.value, [key]: e.detail.value }
+	}
+
+	async function create () {
+		error.value = ''
+		const name = form.value.name.trim()
+		const species = form.value.species.trim()
+		if (name === '') {
+			error.value = '请填写角色名'
+			return
+		}
+		if (name.length > 12) {
+			error.value = '角色名不超过 12 字'
+			return
+		}
+		if (species === '') {
+			error.value = '请填写角色种类'
+			return
+		}
+		if (species.length > 12) {
+			error.value = '角色种类不超过 12 字'
+			return
+		}
+		if (form.value.self_ref.trim().length > 12) {
+			error.value = '自称不超过 12 字'
+			return
+		}
+		if (form.value.catchphrase.trim().length > 40) {
+			error.value = '口头禅不超过 40 字'
+			return
+		}
+		if (form.value.worldview.trim().length > 200) {
+			error.value = '世界观不超过 200 字'
+			return
+		}
+		const tones = form.value.tones.split(/[,，]/).map(x => x.trim()).filter(x => x !== '')
+		if (tones.length > 3) {
+			error.value = '语气标签最多 3 个'
+			return
+		}
+		const body: PersonaCreate = {
+			name,
+			species,
+			self_ref: form.value.self_ref.trim() === '' ? undefined : form.value.self_ref.trim(),
+			catchphrase: form.value.catchphrase.trim() === '' ? undefined : form.value.catchphrase.trim(),
+			worldview: form.value.worldview.trim() === '' ? undefined : form.value.worldview.trim(),
+			tones
+		}
+		creating.value = true
+		try {
+			const created = await api.createPersona(body)
+			// 头像跟人设一起送审：角色建完才能有 id 挂头像，所以分两步、同一个提交动作里做完
+			if (pendingAvatarPath !== '') {
+				await api.uploadPersonaAvatar(created.id, pendingAvatarPath)
+				pendingAvatarPath = ''
+			}
+			showForm.value = false
+			await loadPersonas()
+		} catch (e) {
+			// PERSONA_QUOTA_EXCEEDED / PERSONA_FORBIDDEN_WORD 的文案服务端已经写好
+			// （免费「需要会员」和会员「用完了」是两种话），原样展示；命中额度再指路会员页
+			error.value = errText(e)
+			if ((e as any).code === 'PERSONA_QUOTA_EXCEEDED') {
+				// 角色根本没建成：关掉表单让红字露出来（它在表单最底部，不关就压在下面），
+				// 再指路会员页。头像上传失败不走这支——那时角色已经建成了，表单留着好让用户重试。
+				showForm.value = false
+				uni.navigateTo({ url: '/pages/membership/membership' })
+			}
+		} finally {
+			creating.value = false
+		}
+	}
+
+	/** 新建表单里选头像。只走相册：拍照和相册二选一要弹动作面板，蒸汽模式下那个面板
+	 *  的选项行点不动（vapor-mode.md §9d）。 */
+	async function pickFormAvatar () {
+		error.value = ''
+		let path = ''
+		try {
+			path = await pickImage('album')
+		} catch (e) {
+			error.value = errText(e)
+			return
+		}
+		if (path === '') return  // 用户取消
+		pendingAvatarPath = path
+	}
+
+	// ---------------------------------------------------------------- 对话
+
+	function send () {
+		const content = draft.value.trim()
+		if (content === '' || sending.value) return
+		if (!isLoggedIn() || session.patientId === '') {
+			error.value = '请先选择就诊人'
+			return
+		}
+
+		error.value = ''
+		redflag.value = null
+		draft.value = ''
+		msgs.value.push({ role: 'user', text: content })
+		msgs.value.push({ role: 'assistant', text: '' })
+		const aiIndex = msgs.value.length - 1
+		sending.value = true
+
+		const body = {
+			patient_id: session.patientId,
+			content,
+			// 首轮不传 conversation_id，之后用每轮 done 返回的续，否则会开新会话
+			conversation_id: session.conversationId === '' ? undefined : session.conversationId,
+			persona_id: session.personaId === '' ? undefined : session.personaId
+		}
+
+		task = streamChat(body, {
+			onDelta: (text: string) => {
+				// 整体替换对象，避免个别端对数组内属性变更不响应
+				const cur = msgs.value[aiIndex]
+				msgs.value[aiIndex] = { role: 'assistant', text: cur.text + text }
+				scrollTop.value = scrollTop.value + 9999
+			},
+			onRedFlag: (e) => {
+				redflag.value = { message: e.message, action: e.action }
+			},
+			onDone: (e) => {
+				session.conversationId = e.conversation_id
+				sending.value = false
+				task = null
+				loadHistory(e.conversation_id)
+			},
+			onError: (e: ApiFailure) => {
+				error.value = e.message
+				sending.value = false
+				task = null
+				// 一句都没回来就把占位气泡收掉，别留一个永远「正在输入」的空壳
+				const cur = msgs.value[aiIndex]
+				if (cur !== undefined && cur.text === '') {
+					msgs.value[aiIndex] = { role: 'assistant', text: '这句没发出来，稍后再试。' }
+				}
+			}
+		})
+	}
+
+	/** 首轮对话后拉一次历史，把带引用的消息落到本地（delta 里没有 source_refs）。
+	 *  注意服务端按 created_at **倒序**分页（新的在前），直接 map 就是「助手在上、用户在下」，
+	 *  所以必须 reverse()。这个 bug 的表现正是发送后气泡顺序颠倒。 */
+	async function loadHistory (conversationId: string) {
+		try {
+			const res = await api.chatHistory({ conversation_id: conversationId, page_size: 100 })
+			if (res.items.length === 0) return
+			msgs.value = res.items.slice().reverse().map(m => ({
+				role: m.role === 'user' ? 'user' : 'assistant',
+				text: m.content
+			})) as Msg[]
+			scrollTop.value = scrollTop.value + 9999
+		} catch (e) {
+			// 历史拉取失败不影响本轮渲染，静默即可
+		}
+	}
+</script>
+
+<style>
+	/* root 只管「内容区 + 底部标签栏」的纵向分配；.page 保持原来的 24rpx 内边距，
+	   这样通栏的标签栏不会被那圈内边距左右各凹进去 24rpx。 */
+	.root {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.page {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		padding: 24rpx;
+	}
+
+	.chat {
+		flex: 1;
+		min-height: 0;
+		/* 最后一条气泡和下面的边界声明之间留口气 */
+		padding-bottom: 16rpx;
+	}
+
+	/* ---------------- 顶栏：一句话上下文 + 三个点 ----------------
+	   原来这里是两张条（就诊人 + 角色），各占一行把对话区挤小了，现在合成一行。
+	   角色是谁由导航栏标题回答，这里只保留「在替谁问」——健康对话里这个不能丢。 */
+	.topRow {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		height: 64rpx;
+		margin-bottom: 12rpx;
+	}
+
+	.topCtx {
+		font-size: 24rpx;
+		color: var(--c-muted);
+	}
+
+	.topCtxEmpty {
+		color: var(--c-faint);
+	}
+
+	/* 三个点自己画（图标字体是子集，加 more_vert 要重新 build，源文件不在库里）。
+	   必须是 <button>：view 套三个带背景的小圆点实测点不动（见模板注释）。
+	   button 里不能有子元素，所以三个点就是文字「···」。 */
+	/* 三个点自己画（图标字体是子集，加 more_vert 要重新 build，源文件不在库里）。
+	   形状按 §9b：外层有尺寸挂 @tap，只包一个填满它的子 view，圆点再放那里面。 */
+	.moreBtn {
+		width: 64rpx;
+		height: 64rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.moreDots {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		width: 28rpx;
+		height: 28rpx;
+	}
+
+	.moreDot {
+		width: 8rpx;
+		height: 8rpx;
+		border-radius: 50%;
+		background-color: var(--c-text-2);
+	}
+
+	/* ---------------- 三个点菜单 ---------------- */
+	.menuMask {
+		position: fixed;
+		left: 0;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		flex-direction: column;
+		align-items: flex-end;
+	}
+
+	/* 不用半透明黑：这一层只负责「点外面关掉」，挡住了反而看不清背后的对话。
+	   用一个 spacer 把菜单顶到标题栏下面，右边贴齐——比 position:absolute 稳。 */
+	.menuSpacer {
+		height: 150rpx;
+	}
+
+	.menu {
+		width: 420rpx;
+		margin-right: 24rpx;
+		padding: 12rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border);
+		box-shadow: 0 8rpx 24rpx var(--c-shadow-strong);
+	}
+
+	.menuRow {
+		height: 88rpx;
+	}
+
+	.menuRowIn {
+		height: 100%;
+		flex-direction: row;
+		align-items: center;
+		padding: 0 16rpx;
+		border-radius: 14rpx;
+	}
+
+	.menuIcon {
+		width: 44rpx;
+		font-family: MingluIcons;
+		font-size: 36rpx;
+		line-height: 1;
+		color: var(--c-brand);
+	}
+
+	.menuText {
+		font-size: 28rpx;
+		color: var(--c-text);
+	}
+
+	.menuVal {
+		font-size: 24rpx;
+		color: var(--c-faint);
+		max-width: 140rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.pName {
+		font-size: 28rpx;
+		font-weight: 600;
+		color: var(--c-text);
+		line-height: 1.3;
+	}
+
+	.pMeta {
+		margin-top: 4rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+		line-height: 1.4;
+	}
+
+	/* ---------------- 消息行 ----------------
+	   行间距必须自己写：全局 .row 不带 margin，气泡会挨在一起。
+	   align-items 用 flex-start 而不是全局的 center——三四行的气泡配居中，
+	   头像会漂到段落中间。 */
+	.msgRow {
+		display: flex;
+		flex-direction: row;
+		align-items: flex-start;
+		margin-bottom: 28rpx;
+	}
+
+	.msgMe {
+		justify-content: flex-end;
+	}
+
+	.typing {
+		color: var(--c-faint);
+	}
+
+	.controls {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		padding-top: 16rpx;
+	}
+
+	/* 医疗边界声明：跟着输入框走，不占对话流的位置 */
+	.chatNote {
+		flex-shrink: 0;
+		padding-top: 12rpx;
+	}
+
+	.input {
+		/* uvue 里 input 默认 width:100%（官方文档明示），而 flex:1 的 basis 是 auto，
+		   两者叠加会把整行占满，右边按钮被挤出容器后直接不渲染。
+		   所以这里给死宽度，不用 flex。可用宽度 = 750 - 24*2 = 702rpx，
+		   590 + 16 + 96 = 702rpx，正好一行。 */
+		width: 590rpx;
+		flex-shrink: 0;
+	}
+
+	/* 发送按钮：图标 + 圆角方块，不再占 160rpx 的文字按钮——输入框那边能宽一整截。
+	   单独一个类，不去覆盖全局 .btn：弹层里还要用 .btn 做通栏按钮，
+	   在页面里改 .btn 会把那边的宽度一起改掉。
+	   用 view 不用 <button>：button 里不能有子元素，而且项目实测图标字体在原生 button 里
+	   会用默认字体渲染、直接不显示（person.uvue 的退出登录同因）。 */
+	.sendBtn {
+		margin-left: 16rpx;
+		width: 96rpx;
+		height: 88rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-brand);
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.sendIcon {
+		font-family: MingluIcons;
+		font-size: 40rpx;
+		line-height: 1;
+		color: var(--c-on-brand);
+	}
+
+	/* ---------------- 助手头像 ----------------
+	   有图就用 <image>，没图才退回「字 + 底色」。预设四张图是打包资源，
+	   走 /static/avatars/*.jpg；自定义角色的是服务端 URL（审核通过才给）。
+	   .paImg 的宽高必须写死：<image> 不写尺寸会按原图比例撑开，实测 256px 的图
+	   直接把对话行撑满屏。基座尺寸放在 .paSm / .paLg 前面，好让它们覆盖。 */
+	.paImg {
+		width: 52rpx;
+		height: 52rpx;
+		border-radius: 16rpx;
+		margin-right: 16rpx;
+		flex-shrink: 0;
+	}
+
+	.pa {
+		width: 52rpx;
+		height: 52rpx;
+		border-radius: 16rpx;
+		align-items: center;
+		justify-content: center;
+		margin-right: 16rpx;
+		flex-shrink: 0;
+	}
+
+	.paSm {
+		width: 64rpx;
+		height: 64rpx;
+		border-radius: 20rpx;
+	}
+
+	.paLg {
+		width: 88rpx;
+		height: 88rpx;
+		border-radius: 24rpx;
+	}
+
+	.paText {
+		color: #FFFFFF;
+		font-size: 24rpx;
+		font-weight: bold;
+	}
+
+	.paTextLg {
+		font-size: 36rpx;
+	}
+
+	/* ---------------- 角色弹层 ---------------- */
+	.sheetMask {
+		position: fixed;
+		left: 0;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.45);
+		flex-direction: column;
+		justify-content: flex-end;
+	}
+
+	/* 高度写死成 rpx、不用百分比：fixed 遮罩里子元素的 % 高度实测解析得不对劲
+	   （写 76% 实际只有 55% 左右，弹层底被屏幕切掉一截），而且百分比一旦让弹层高过
+	   遮罩，flex 的交叉轴拉伸就失效——滚动区会缩成按内容撑宽（实测 715px），
+	   输入框和按钮全都跟着窄一块。rpx 在 1080×2376 和 1080×1920 上都放得下。
+	   滚动区用 flex:1 + min-height:0 撑，和 account.uvue 的 .page > .scroll 同一套。 */
+	.sheet {
+		display: flex;
+		flex-direction: column;
+		height: 1200rpx;
+		padding: 24rpx 24rpx 32rpx;
+		background-color: var(--c-page);
+		border-radius: 28rpx 28rpx 0 0;
+	}
+
+	.sheetHead {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 12rpx;
+	}
+
+	.sheetTitle {
+		font-size: 32rpx;
+		font-weight: bold;
+		color: var(--c-text);
+	}
+
+	/* 宽度也要显式给：这个滚动区实测只吃到 715px（按内容撑的），输入框和按钮
+	   全都跟着窄一块。列表弹层没暴露这个问题（里面最宽的是通栏卡片），但两个弹层
+	   共用这个类，一起写上。 */
+	.sheetScroll {
+		flex: 1;
+		min-height: 0;
+		width: 100%;
+		align-self: stretch;
+	}
+
+	/* <button> 在蒸汽模式下按内容撑宽，不跟随父容器拉伸（实测弹层里只有 227px）。
+       view 会拉伸，原生 button 不会——要通栏就自己写 100%。 */
+	.sheetBtn {
+		width: 100%;
+	}
+
+	.sheetLabel {
+		font-size: 26rpx;
+		color: var(--c-muted);
+		margin: 20rpx 0 10rpx;
+	}
+
+	/* 弹层顶部「当前是谁」：大头像 + 名字 + 一句状态。
+	   预设角色只展示不给改（服务端固定下发），自定义角色没过头像审核时提示去创建里传。 */
+	.curRow {
+		flex-direction: row;
+		align-items: center;
+		padding: 8rpx 4rpx 20rpx;
+	}
+
+	/* 新建表单里的选头像行。形状同 .pRow：外层有尺寸挂 @tap，只包一个填满它的子 view。 */
+	.avatarPick {
+		height: 104rpx;
+	}
+
+	.avatarPickIn {
+		height: 100%;
+		flex-direction: row;
+		align-items: center;
+		padding: 0 20rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border-weak);
+	}
+
+	.avatarPickText {
+		font-size: 26rpx;
+		color: var(--c-text-2);
+	}
+
+	.chev {
+		font-family: MingluIcons;
+		font-size: 32rpx;
+		line-height: 1;
+		color: var(--c-faint);
+	}
+
+	/* 角色行：外层 view 挂 @tap 且只包一个填满它的子 view，是蒸汽模式下
+	   唯一点得动的形状（vapor-mode.md §9b，参考首页 .tile > .tileBox）。 */
+	.pRow {
+		height: 112rpx;
+		margin-bottom: 12rpx;
+	}
+
+	.pRowIn {
+		height: 100%;
+		flex-direction: row;
+		align-items: center;
+		padding: 0 20rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border-weak);
+	}
+</style>

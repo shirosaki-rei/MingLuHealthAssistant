@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+var/
+*.db
+
+# 数据库备份（文件名带时间戳，*.db 匹配不到，而里面有真实用户数据）
+*.db.bak*
+*.db-*
+*.sqlite*
+
+# uni-app x 构建产物
+unpackage/
+.hbuilderx/
+
+# DCloud 源码参考，自带 .git 的嵌套仓库（16MB），绝不能进版本库
+uniapp-x-src/
+
+# 密钥与本地配置（docker-compose 的 .env 里有 JWT_SECRET）
+.env
+
+# 运行时日志（HBuilderX 写在 android/dist/logs）
+dist/
+
+# 依赖
+node_modules/
+
+# 编辑器
+.DS_Store
+.idea/
+.vscode/
+
+# 旧 PoC 工程
+uni-appX/
+
+# 调试产物
+images/
+.tmpcheck/
+
+# agent
+.workbuddy/

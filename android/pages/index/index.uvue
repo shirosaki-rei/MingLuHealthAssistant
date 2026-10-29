@@ -1,0 +1,40 @@
+<template>
+	<view class="page">
+		<image class="logo" src="/static/logo.png"></image>
+		<text class="title">明路</text>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { initAuth, isLoggedIn } from '@/stores/auth'
+
+	// onLoad / onPageShow 等页面生命周期在 <script setup> 里直接可用，不需要 import
+
+	// 启动页只负责分流。initAuth 放这里而不是 App.uvue：App.uvue 是 lang="uts"，
+	// 引 .ts 模块的兼容性没把握，启动页一定是 ts 且一定会先跑。
+	onLoad(() => {
+		initAuth()
+		uni.reLaunch({ url: isLoggedIn() ? '/pages/home/home' : '/pages/login/login' })
+	})
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		padding-top: 200rpx;
+	}
+
+	.logo {
+		height: 160rpx;
+		width: 160rpx;
+	}
+
+	.title {
+		margin-top: 24rpx;
+		font-size: 40rpx;
+		font-weight: bold;
+		color: var(--c-brand);
+	}
+</style>

@@ -1,0 +1,66 @@
+# 明路后端。单机起步（架构 §7.1：4C8G 一台，日活过万再拆）。
+#
+#   cp .env.example .env   # 填 JWT_SECRET 等
+#   docker compose up --build
+#
+# api 之前会先跑一次性的 migrate 服务（alembic upgrade head），
+# 容器自己不跑 DDL —— 架构 §7.3。
+#
+# 改 POSTGRES_PASSWORD 之后如果报 password authentication failed：
+# postgres 的 entrypoint 只初始化**空**数据目录，旧 pgdata 卷沿用旧密码。
+# 开发库无所谓，`docker compose down -v` 删卷重来。
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: minglu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-minglu-dev-only}
+      POSTGRES_DB: minglu
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minglu -d minglu"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # 不对外暴露端口，只有同网络的 api 能连
+
+  migrate:
+    build: ./services/api
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://minglu:${POSTGRES_PASSWORD:-minglu-dev-only}@db:5432/minglu
+      MINGLU_ENV: prod
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: ./services/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://minglu:${POSTGRES_PASSWORD:-minglu-dev-only}@db:5432/minglu
+      MINGLU_ENV: prod
+      # 不设就用 dev 默认值，但 MINGLU_ENV=prod 下 app/config.py 的启动自检会直接拒绝起来
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret}
+      # 沙箱支付：生产必须关闭
+      PAYMENT_MOCK: "false"
+      # 境内模型服务商，白名单在 app/platform/llm.py 硬编码
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+      STORAGE_DIR: /srv/var/storage
+    volumes:
+      - apistorage:/srv/var/storage
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  apistorage:

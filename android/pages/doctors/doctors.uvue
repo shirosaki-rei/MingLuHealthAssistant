@@ -1,0 +1,377 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">找一位合适的医生</text>
+			<text class="hint">描述困扰，看看可以从哪里开始。说不清也没关系，先跟助手聊两句。</text>
+
+			<!-- 自然语言入口：不会填症状的人从这里进对话，让助手帮着捋 -->
+			<view class="searchBox" @tap="goChat">
+				<text class="searchIcon">{{ ic('search') }}</text>
+				<text class="grow searchPh">说说你的症状或想咨询的问题</text>
+				<text class="searchGo">{{ ic('chevron_right') }}</text>
+			</view>
+
+			<!-- 科室筛选：没选科室时是「选科室」，选了之后是「换科室」 -->
+			<text class="section">按科室找</text>
+			<view class="chipRow">
+				<view v-for="d in departments" :key="d.code" class="chipItem">
+					<button class="chipOn" v-if="d.code === code" @click="pickDepartment(d)">{{ d.name }}</button>
+					<button class="chip" v-else @click="pickDepartment(d)">{{ d.name }}</button>
+				</view>
+			</view>
+
+			<block v-if="code !== ''">
+				<view class="rowBetween sectionHead">
+					<text class="section">{{ deptName }}</text>
+					<text class="meta">{{ doctors.length }} 位医生</text>
+				</view>
+
+				<text class="loading" v-if="loading">加载中…</text>
+
+				<view v-for="doc in doctors" :key="doc.id" class="docCard" @tap="goDoctor(doc.id)">
+					<view class="docTop">
+						<text class="docAvatar">{{ doc.name.slice(0, 1) }}</text>
+						<view class="grow">
+							<text class="docName">{{ doc.name }}<text class="docTitle"> {{ doc.title }}</text></text>
+							<text class="docMeta" v-if="doc.hospital">{{ doc.hospital }}</text>
+						</view>
+						<text :class="statusClass(doc.online_status)">{{ statusText(doc.online_status) }}</text>
+					</view>
+
+					<view class="docTags" v-if="specialtiesText(doc.specialties) !== ''">
+						<text class="docTag" v-for="(s, i) in doc.specialties" :key="i">{{ s }}</text>
+					</view>
+
+					<view class="docBottom">
+						<text class="docMeta" v-if="minutesText(doc.response_minutes) !== ''">约 {{ minutesText(doc.response_minutes) }} 分钟回复</text>
+						<text class="docPrice" v-if="priceText(doc.price_cents) !== ''">¥{{ priceText(doc.price_cents) }} 起</text>
+						<!-- 入口必须是 button：整卡 @tap 被子 view 吃掉不冒泡（实测），
+						     text 的点击也不冒泡。button 是蒸汽模式下唯一稳定收得到点击的元素。 -->
+						<button class="docGo" @click="goDoctor(doc.id)">查看主页</button>
+					</view>
+
+					<view class="reason" v-if="doc.match_reason">
+						<text class="reasonText">为什么推荐这位：{{ doc.match_reason }}</text>
+					</view>
+				</view>
+
+				<view class="empty" v-if="!loading && doctors.length === 0">
+					<text class="emptyText">这个科室暂时没有可咨询的医生。换个科室，或先跟助手聊聊。</text>
+				</view>
+			</block>
+
+			<view class="callout">
+				<text class="calloutTitle">咨询属于就医路径</text>
+				<text class="calloutDesc">找医生与咨询不读会员状态、不消耗对话额度。平台只做信息整理与咨询撮合，不提供诊断与处方。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 底部一级入口：首页 / 找医生 / 问助手(中央) / 健康 / 我的。
+		     当前页那一项不挂 @tap（点了没反应才是对的），图标文字用 *On 变体表示选中——
+		     蒸汽模式动态 :class 不重算（CLAUDE.md 规则 5）。样式在 App.uvue 的 .tabbar 段，
+		     全 App 一份，别在页面里另写。跳转用 reLaunch 不用 navigateTo：标签页是平级的，
+		 navigateTo 会把页面一层层堆起来（首页→找医生→健康→我的，返回键要按四次）。 -->
+		<view class="tabbar">
+			<view class="tab" @tap="switchTab('/pages/home/home')">
+				<text class="tabIcon">{{ ic('home') }}</text>
+				<text class="tabText">首页</text>
+			</view>
+			<view class="tab">
+				<text class="tabIconOn">{{ ic('travel_explore') }}</text>
+				<text class="tabTextOn">找医生</text>
+			</view>
+			<view class="tabCenter" @tap="switchTab('/pages/chat/chat')">
+				<view class="tabCenterBtn">
+					<text class="tabCenterText">问助手</text>
+				</view>
+				<text class="tabCenterLabel">问助手</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/health/health')">
+				<text class="tabIcon">{{ ic('favorite') }}</text>
+				<text class="tabText">健康</text>
+			</view>
+			<view class="tab" @tap="switchTab('/pages/person/person')">
+				<text class="tabIcon">{{ ic('person') }}</text>
+				<text class="tabText">我的</text>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { ref } from 'vue'
+	import { api } from '@/api'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { appOnly } from '@/utils/apponly'
+	import { ic } from '@/utils/icons'
+
+	type Doctor = components['schemas']['Doctor']
+
+	/** api.listDepartments 的返回类型没进 schemas，这里按契约字段手写 */
+	interface Department {
+		code: string
+		name: string
+		description: string
+		consult_enabled: boolean
+	}
+
+	const STATUS_TEXT: Record<string, string> = {
+		online: '在线',
+		busy: '忙碌',
+		offline: '离线'
+	}
+
+	const code = ref('')
+	const deptName = ref('')
+	const departments = ref<Department[]>([])
+	const doctors = ref<Doctor[]>([])
+	const loading = ref(false)
+	const error = ref('')
+
+	// onLoad 的 options 在 uvue 里是宽松类型，取参数前自己兜底
+	onLoad((options: any) => {
+		const c = options === undefined || options.department_code === undefined ? '' : String(options.department_code)
+		const n = options === undefined || options.department_name === undefined ? '' : String(options.department_name)
+		if (c !== '') {
+			code.value = c
+			deptName.value = decodeName(n)
+			loadDoctors()
+		} else {
+			loadDepartments()
+		}
+	})
+
+	/** 跳转时编码过科室名，框架可能已解一次也可能没有，这里兜底解一次 */
+	function decodeName (name: string): string {
+		try {
+			return decodeURIComponent(name)
+		} catch (e) {
+			return name
+		}
+	}
+
+	async function loadDepartments () {
+		error.value = ''
+		try {
+			const res = await api.listDepartments()
+			departments.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	async function loadDoctors () {
+		if (code.value === '') return
+		error.value = ''
+		loading.value = true
+		try {
+			// online_only 传 false：忙碌的医生也能接，别在列表里就把人筛掉
+			const res = await api.listDoctors(code.value, { online_only: false })
+			doctors.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	function pickDepartment (d: Department) {
+		code.value = d.code
+		deptName.value = d.name
+		loadDoctors()
+	}
+
+	// 契约里这几个字段都可为空，模板不支持 ?.，统一走函数兜底
+	function specialtiesText (list?: string[]): string {
+		return list === undefined || list === null ? '' : list.join('、')
+	}
+
+	function priceText (cents?: number): string {
+		// 金额单位是分
+		return cents === undefined || cents === null ? '' : (cents / 100).toFixed(2)
+	}
+
+	function minutesText (minutes?: number): string {
+		return minutes === undefined || minutes === null ? '' : String(minutes)
+	}
+
+	function statusText (status?: string): string {
+		return STATUS_TEXT[status === undefined ? '' : status] ?? '离线'
+	}
+
+	function statusClass (status?: string): string {
+		if (status === 'online') return 'status stOnline'
+		if (status === 'busy') return 'status stBusy'
+		return 'status stOffline'
+	}
+
+	function goDoctor (doctorId: string) {
+		uni.navigateTo({ url: '/pages/doctor/doctor?doctor_id=' + doctorId })
+	}
+
+	function goChat () {
+		uni.navigateTo({ url: '/pages/chat/chat' })
+	}
+
+	// 底部标签栏：平级页面，reLaunch 清掉页面栈，返回键直接退出而不是逐层回退
+	function switchTab (url: string) {
+		if (appOnly(url)) return
+		uni.reLaunch({ url })
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	/* 自然语言搜索入口：整条可点，进对话让助手帮着捋症状 */
+	.searchBox {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin: 20rpx 0 8rpx;
+		padding: 24rpx 26rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border);
+	}
+
+	.searchIcon {
+		font-family: MingluIcons;
+		font-size: 40rpx;
+		line-height: 1;
+		color: var(--c-brand);
+		margin-right: 16rpx;
+	}
+
+	.searchPh {
+		font-size: 26rpx;
+		color: var(--c-faint);
+	}
+
+	.searchGo {
+		font-family: MingluIcons;
+		font-size: 32rpx;
+		line-height: 1;
+		color: var(--c-faint);
+	}
+
+	.sectionHead {
+		margin-bottom: 0;
+	}
+
+	.chipRow {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-bottom: 8rpx;
+	}
+
+	/* 医生卡：头像 + 姓名职称 + 状态，擅长做标签，底部一行价格与动作 */
+	.docCard {
+		padding: 28rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-card);
+		margin-bottom: 16rpx;
+		border: 2rpx solid var(--c-border);
+	}
+
+	.docTop {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.docAvatar {
+		width: 88rpx;
+		height: 88rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-mint);
+		color: var(--c-brand);
+		font-size: 36rpx;
+		font-weight: bold;
+		text-align: center;
+		line-height: 88rpx;
+		margin-right: 20rpx;
+		flex-shrink: 0;
+	}
+
+	.docName {
+		font-size: 30rpx;
+		font-weight: bold;
+		color: var(--c-text);
+	}
+
+	.docTitle {
+		font-size: 24rpx;
+		font-weight: normal;
+		color: var(--c-muted);
+	}
+
+	.docMeta {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+		line-height: 1.5;
+	}
+
+	.docTags {
+		display: flex;
+		flex-direction: row;
+		flex-wrap: wrap;
+		margin-top: 16rpx;
+	}
+
+	.docTag {
+		margin: 0 10rpx 10rpx 0;
+		padding: 6rpx 14rpx;
+		border-radius: 8rpx;
+		background-color: var(--c-card-soft);
+		font-size: 22rpx;
+		color: var(--c-text-2);
+	}
+
+	.docBottom {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8rpx;
+		padding-top: 20rpx;
+		border-top: 2rpx solid var(--c-border-weak);
+	}
+
+	.docPrice {
+		margin-left: auto;
+		font-size: 30rpx;
+		font-weight: bold;
+		color: var(--c-danger);
+	}
+
+	/* 「查看主页」是进医生详情的唯一入口，必须是 button（见模板注释） */
+	.docGo {
+		margin-left: 20rpx;
+		padding: 0;
+		background-color: transparent;
+		font-size: 24rpx;
+		color: var(--c-brand);
+		font-weight: 600;
+		line-height: 1.5;
+	}
+</style>

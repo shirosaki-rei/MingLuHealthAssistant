@@ -1,0 +1,181 @@
+<template>
+  <view class="page">
+    <text class="h1">明路 PoC · 三端一致性</text>
+    <text class="hint">同一份代码在 安卓 / 小程序 / H5 上是否表现一致</text>
+
+    <view class="card">
+      <text class="label">1. 文本与自动折行</text>
+      <text class="body">这是一段较长的中文文本，用来检查换行与行高在三端是否一致。第二句。第三句。</text>
+    </view>
+
+    <view class="card">
+      <text class="label">2. Flex 等宽布局</text>
+      <view class="flexRow">
+        <view class="box"><text class="boxText">1</text></view>
+        <view class="box"><text class="boxText">2</text></view>
+        <view class="box"><text class="boxText">3</text></view>
+      </view>
+    </view>
+
+    <view class="card">
+      <text class="label">3. 输入框双向绑定</text>
+      <input class="input" v-model="text" placeholder="输入点什么" />
+      <text class="body">回显：{{ text }}</text>
+    </view>
+
+    <view class="card">
+      <text class="label">4. 滚动列表（20 项）</text>
+      <scroll-view class="list" direction="vertical">
+        <view v-for="i in 20" :key="i" class="item">
+          <text class="itemText">列表项 {{ i }}</text>
+        </view>
+      </scroll-view>
+    </view>
+
+    <view class="card">
+      <text class="label">5. 样式探针：圆角 / 阴影 / 渐变</text>
+      <view class="probeRow">
+        <view class="probe probeRadius"><text class="probeText">圆角</text></view>
+        <view class="probe probeShadow"><text class="probeText probeDark">阴影</text></view>
+        <view class="probe probeGradient"><text class="probeText">渐变</text></view>
+      </view>
+    </view>
+
+    <button class="btn" @click="goStream">去验证流式对话</button>
+    <button class="btn ghost" @click="goCamera">去验证拍照上传</button>
+    <button class="btn ghost" @click="goAlarm">去验证精确闹钟（仅安卓）</button>
+  </view>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+
+const text = ref('')
+
+function goStream () {
+  uni.navigateTo({ url: '/pages/stream/stream' })
+}
+
+function goCamera () {
+  // 故意放进分包，用来验证分包跳转与 preloadRule 是否生效
+  uni.navigateTo({ url: '/pages-sub/camera/camera' })
+}
+
+function goAlarm () {
+  uni.navigateTo({ url: '/pages/alarm/alarm' })
+}
+</script>
+
+<style>
+.page {
+  padding: 24rpx;
+  background-color: #e8dcc8;
+}
+.h1 {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #2f4f43;
+}
+.hint {
+  font-size: 24rpx;
+  color: #6b6b6b;
+  margin-top: 8rpx;
+  margin-bottom: 24rpx;
+}
+.card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+}
+.label {
+  font-size: 26rpx;
+  color: #2f4f43;
+  margin-bottom: 12rpx;
+}
+.body {
+  font-size: 28rpx;
+  color: #333333;
+  line-height: 1.6;
+}
+.flexRow {
+  display: flex;
+  flex-direction: row;
+}
+.box {
+  flex: 1;
+  height: 100rpx;
+  background-color: #2f4f43;
+  border-radius: 12rpx;
+  margin-right: 12rpx;
+  justify-content: center;
+  align-items: center;
+  display: flex;
+}
+.boxText {
+  color: #ffffff;
+  font-size: 26rpx;
+}
+.input {
+  height: 72rpx;
+  border: 1px solid #d8d0c0;
+  border-radius: 12rpx;
+  padding-left: 16rpx;
+  font-size: 28rpx;
+  margin-bottom: 12rpx;
+}
+.list {
+  height: 300rpx;
+}
+.item {
+  padding: 16rpx 0;
+  border-bottom: 1px solid #eeeeee;
+}
+.itemText {
+  font-size: 26rpx;
+  color: #444444;
+}
+.probeRow {
+  display: flex;
+  flex-direction: row;
+}
+.probe {
+  flex: 1;
+  height: 120rpx;
+  justify-content: center;
+  align-items: center;
+  display: flex;
+  margin-right: 12rpx;
+}
+.probeRadius {
+  border-radius: 24rpx;
+  background-color: #e08a3c;
+}
+.probeShadow {
+  border-radius: 12rpx;
+  background-color: #ffffff;
+  box-shadow: 0px 4px 12px #999999;
+}
+.probeGradient {
+  border-radius: 12rpx;
+  background-image: linear-gradient(#2f4f43, #e08a3c);
+}
+.probeText {
+  font-size: 24rpx;
+  color: #ffffff;
+}
+.probeDark {
+  color: #2f4f43;
+}
+.btn {
+  margin-top: 16rpx;
+  background-color: #2f4f43;
+  color: #ffffff;
+  border-radius: 12rpx;
+  font-size: 30rpx;
+}
+.ghost {
+  background-color: #ffffff;
+  color: #2f4f43;
+}
+</style>

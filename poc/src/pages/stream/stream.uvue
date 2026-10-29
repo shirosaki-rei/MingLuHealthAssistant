@@ -1,0 +1,265 @@
+<template>
+  <view class="page">
+    <text class="h1">流式对话</text>
+    <text class="meta">传输 {{ transport }} · 首字 {{ firstMs }}ms · 帧 {{ chunks }} · 总 {{ totalMs }}ms</text>
+
+    <view class="switchRow">
+      <text class="switchLabel">按句缓冲</text>
+      <switch :checked="bySentence" @change="onToggle" />
+      <text class="switchHint">{{ bySentence ? '未成句不显示' : '逐字直显' }}</text>
+    </view>
+
+    <scroll-view class="chat" direction="vertical">
+      <view v-for="(m, i) in msgs" :key="i" :class="m.role === 'ai' ? 'row rowAi' : 'row rowMe'">
+        <view :class="m.role === 'ai' ? 'bubble bubbleAi' : 'bubble bubbleMe'">
+          <text class="bubbleText">{{ m.text }}</text>
+          <text v-if="m.role === 'ai' && m.text" class="aiTag">AI 生成</text>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="controls">
+      <button class="btn" :disabled="running" @click="start">开始</button>
+      <button class="btn ghost" :disabled="!running" @click="stop">中断</button>
+      <button class="btn ghost" @click="reset">清空</button>
+    </view>
+
+    <view class="error" v-if="error">
+      <text class="errorText">{{ error }}</text>
+    </view>
+
+    <button class="btn ghost" @click="netCheck">网络自检（/health）</button>
+    <view class="net" v-if="netInfo">
+      <text class="netText">{{ netInfo }}</text>
+    </view>
+
+    <view class="note">
+      <text class="noteText">真机调试需把 BASE 改成电脑局域网 IP（见 script 顶部）。localhost 在手机上指向手机自己。</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+import { streamChat, createSentenceBuffer } from '@/utils/stream'
+import { formatError } from '@/utils/err'
+
+interface Msg { role: 'me' | 'ai'; text: string }
+
+// 电脑局域网 IP，真机调试必须改这里
+let BASE = 'http://localhost:8787'
+// #ifndef H5
+BASE = 'http://172.25.209.140:8787'
+// #endif
+
+const msgs = ref<Msg[]>([])
+const running = ref(false)
+const bySentence = ref(true)
+const transport = ref('—')
+const firstMs = ref(0)
+const totalMs = ref(0)
+const chunks = ref(0)
+const error = ref('')
+const netInfo = ref('')
+
+let task: any = null
+
+function onToggle (e: any) {
+  bySentence.value = !!e.detail.value
+}
+
+function appendTo (index: number, text: string) {
+  // 整体替换对象，避免个别端对数组内属性变更不响应
+  const cur = msgs.value[index]
+  msgs.value[index] = { role: cur.role, text: cur.text + text }
+}
+
+function reset () {
+  // 先清 UI，再停任务。
+  // 原因：请求已完成时 task.abort() 会抛异常，如果放在前面会挡住后面的清空逻辑。
+  msgs.value = []
+  transport.value = '—'
+  firstMs.value = 0
+  totalMs.value = 0
+  chunks.value = 0
+  error.value = ''
+  stop()
+}
+
+function start () {
+  if (running.value) return
+  reset()
+  running.value = true
+
+  const t0 = Date.now()
+  msgs.value.push({ role: 'me', text: '我最近老是头晕' })
+  msgs.value.push({ role: 'ai', text: '' })
+  const aiIndex = 1
+
+  const buffer = createSentenceBuffer((s) => appendTo(aiIndex, s))
+
+  task = streamChat(`${BASE}/api/chat/stream?delay=40`, {
+    onDelta (delta: string) {
+      if (firstMs.value === 0) firstMs.value = Date.now() - t0
+      chunks.value++
+      if (bySentence.value) {
+        buffer.push(delta)
+      } else {
+        appendTo(aiIndex, delta)
+      }
+    },
+    onDone () {
+      buffer.flushRest()
+      totalMs.value = Date.now() - t0
+      running.value = false
+    },
+    onError (e: unknown) {
+      error.value = '流式失败：' + formatError(e)
+      running.value = false
+    }
+  })
+  transport.value = task.transport
+}
+
+/** 直连 /health，用来区分「网络不通」和「代码问题」 */
+function netCheck () {
+  error.value = ''
+  netInfo.value = '检测中…'
+  uni.request({
+    url: `${BASE}/health`,
+    method: 'GET',
+    success: (res: any) => {
+      netInfo.value = 'HTTP ' + res.statusCode + ' → ' + JSON.stringify(res.data)
+    },
+    fail: (e: any) => {
+      netInfo.value = '失败：' + formatError(e) + '（多为明文 HTTP 被拦或不在同一网段）'
+    }
+  } as any)
+}
+
+function stop () {
+  try {
+    if (task && task.abort) task.abort()
+  } catch (e) {
+    // 请求已结束时 abort 会抛错，属正常情况，忽略即可
+  }
+  task = null
+  running.value = false
+}
+</script>
+
+<style>
+.page {
+  padding: 24rpx;
+  background-color: #e8dcc8;
+}
+.h1 {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #2f4f43;
+}
+.meta {
+  font-size: 22rpx;
+  color: #6b6b6b;
+  margin-top: 8rpx;
+}
+.switchRow {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 16rpx;
+  margin-bottom: 16rpx;
+}
+.switchLabel {
+  font-size: 26rpx;
+  color: #2f4f43;
+  margin-right: 16rpx;
+}
+.switchHint {
+  font-size: 22rpx;
+  color: #6b6b6b;
+  margin-left: 12rpx;
+}
+.chat {
+  height: 620rpx;
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 16rpx;
+}
+.row {
+  display: flex;
+  flex-direction: row;
+  margin-bottom: 16rpx;
+}
+.rowAi {
+  justify-content: flex-start;
+}
+.rowMe {
+  justify-content: flex-end;
+}
+.bubble {
+  max-width: 300px;
+  border-radius: 16rpx;
+  padding: 16rpx;
+}
+.bubbleAi {
+  background-color: #f2efe6;
+}
+.bubbleMe {
+  background-color: #2f4f43;
+}
+.bubbleText {
+  font-size: 28rpx;
+  line-height: 1.6;
+  color: #222222;
+}
+.aiTag {
+  font-size: 20rpx;
+  color: #8a8a8a;
+  margin-top: 8rpx;
+}
+.controls {
+  display: flex;
+  flex-direction: row;
+  margin-top: 16rpx;
+}
+.btn {
+  flex: 1;
+  margin-right: 12rpx;
+  background-color: #2f4f43;
+  color: #ffffff;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+}
+.ghost {
+  background-color: #ffffff;
+  color: #2f4f43;
+}
+.error {
+  margin-top: 16rpx;
+  padding: 16rpx;
+  background-color: #fbe9e7;
+  border-radius: 12rpx;
+}
+.errorText {
+  font-size: 24rpx;
+  color: #c0392b;
+}
+.net {
+  margin-top: 12rpx;
+  padding: 16rpx;
+  background-color: #ffffff;
+  border-radius: 12rpx;
+}
+.netText {
+  font-size: 24rpx;
+  color: #2f4f43;
+}
+.note {
+  margin-top: 20rpx;
+}
+.noteText {
+  font-size: 22rpx;
+  color: #6b6b6b;
+}
+</style>

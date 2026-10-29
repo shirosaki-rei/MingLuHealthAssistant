@@ -1,0 +1,47 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "明路 PoC"
+      }
+    },
+    {
+      "path": "pages/stream/stream",
+      "style": {
+        "navigationBarTitleText": "流式对话"
+      }
+    },
+    {
+      "path": "pages/alarm/alarm",
+      "style": {
+        "navigationBarTitleText": "精确闹钟"
+      }
+    }
+  ],
+  "subPackages": [
+    {
+      "root": "pages-sub",
+      "pages": [
+        {
+          "path": "camera/camera",
+          "style": {
+            "navigationBarTitleText": "拍照上传"
+          }
+        }
+      ]
+    }
+  ],
+  "preloadRule": {
+    "pages/index/index": {
+      "network": "all",
+      "packages": ["pages-sub"]
+    }
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "明路 PoC",
+    "navigationBarBackgroundColor": "#E8DCC8",
+    "backgroundColor": "#E8DCC8"
+  }
+}

@@ -1,0 +1,382 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<text class="h1">上传报告</text>
+			<text class="hint">拍一张检验报告，明路会读出指标并标出异常项。识别要几秒，别退出页面。</text>
+
+			<!-- 大上传区：没选图时是整个可点区域，选完之后变成预览 -->
+			<view class="uploader" v-if="imgPath === ''" @tap="choose">
+				<text class="uploaderIcon">{{ ic('photo_camera') }}</text>
+				<text class="uploaderTitle">拍一张或选一张报告图片</text>
+				<text class="uploaderDesc">支持血常规、尿常规、生化等常见化验单</text>
+			</view>
+
+			<block v-else>
+				<image class="preview" :src="imgPath" mode="aspectFit" />
+				<view class="previewBar">
+					<text class="cardMeta grow">{{ fileName }}</text>
+					<button class="textbtn" @click="choose">重新选择</button>
+				</view>
+				<button class="btn" :disabled="uploading || polling" @click="upload">
+					{{ uploading ? '上传中…' : '上传并识别' }}
+				</button>
+			</block>
+
+			<!-- 识别中：进度条 + 说明，别让用户干等 -->
+			<view class="processing" v-if="polling">
+				<text class="cardTitle">识别中，请稍候…</text>
+				<text class="cardMeta">每 2 秒查一次，最多约 30 秒。</text>
+				<view class="progress">
+					<view class="progressBar" :style="{ width: progressPct + '%' }"></view>
+				</view>
+			</view>
+
+			<block v-if="done">
+				<text class="section">识别结果</text>
+
+				<view class="banner" v-if="failed">
+					<text class="bannerIcon">{{ ic('warning') }}</text>
+					<view class="grow">
+						<text class="bannerTitle">这张没认出来</text>
+						<text class="bannerDesc">换一张更清晰的图片，或重新拍一次。</text>
+					</view>
+					<button class="btn small" :disabled="uploading" @click="upload">重试</button>
+				</view>
+
+				<block v-else>
+					<view class="metricCard" v-for="(it, i) in items" :key="i">
+						<view class="rowBetween">
+							<text class="cardTitle">{{ it.name }}</text>
+							<text :class="abnormal(it.flag ? 'flag flagBad' : 'flag flagOk')">{{ flagLabel(it.flag) }}</text>
+						</view>
+						<view class="metricVal">
+							<text class="metricNum">{{ it.value }}</text>
+							<text class="metricUnit">{{ it.unit }}</text>
+						</view>
+						<text class="cardMeta">参考范围：{{ refRange(it) }}</text>
+					</view>
+
+					<view class="summaryCard" v-if="summary !== ''">
+						<text class="cardTitle">解读</text>
+						<text class="cardMeta">{{ summary }}</text>
+					</view>
+
+					<view class="empty" v-if="items.length === 0 && summary === ''">
+						<text class="emptyText">没有解析出指标</text>
+					</view>
+				</block>
+			</block>
+
+			<view class="callout">
+				<text class="calloutTitle">识别结果要人工核对</text>
+				<text class="calloutDesc">指标由图片识别得出，可能有误差，请以纸质报告与医生判断为准。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import type { components } from '@/types/api'
+	import { errText } from '@/utils/apierr'
+	import { hasList, hasNum, hasText } from '@/utils/blank'
+	import { ic } from '@/utils/icons'
+	import { pickImage } from '@/utils/pickimage'
+
+	type Report = components['schemas']['Report']
+	type ReportItem = components['schemas']['ReportItem']
+
+	/** OCR 是异步的：2 秒一次、最多 15 次（约 30 秒）还没好就当这一轮失败 */
+	const POLL_MS = 2000
+	const MAX_TRIES = 15
+
+	const FLAG_LABEL: Record<string, string> = {
+		normal: '正常',
+		low: '偏低',
+		high: '偏高',
+		abnormal: '异常'
+	}
+
+	const imgPath = ref('')
+	const imgName = ref('')
+	const report = ref<Report | null>(null)
+	const polling = ref(false)
+	const uploading = ref(false)
+	const tries = ref(0)
+	const error = ref('')
+
+	const done = computed(() => report.value !== null && report.value.status !== 'processing')
+	const failed = computed(() => report.value !== null && report.value.status === 'failed')
+
+	/** 识别进度按已轮询次数估算，只是个心理预期，不是真实进度 */
+	const progressPct = computed(() => {
+		if (!polling.value) return 0
+		const p = Math.round((tries.value / MAX_TRIES) * 100)
+		return p > 95 ? 95 : p
+	})
+
+	const fileName = computed(() => (imgName.value === '' ? '已选择 1 张图片' : imgName.value))
+
+	// 模板里不做判空，items/summary 都可能是 null，这里统一成空值
+	const items = computed<ReportItem[]>(() => {
+		const r = report.value
+		if (r === null || !hasList(r.items)) return []
+		return r.items as ReportItem[]
+	})
+
+	const summary = computed(() => {
+		const r = report.value
+		if (r === null || !hasText(r.summary)) return ''
+		return r.summary as string
+	})
+
+	let timer: number | null = null
+
+	// 轮询跨页面存活会打无用请求，退出时必须停
+	onUnload(() => {
+		stopPoll()
+	})
+
+	function stopPoll () {
+		if (timer !== null) {
+			clearInterval(timer)
+			timer = null
+		}
+		polling.value = false
+	}
+
+	function startPoll (reportId: string) {
+		stopPoll()
+		tries.value = 0
+		polling.value = true
+		timer = setInterval(async () => {
+			if (tries.value >= MAX_TRIES) {
+				stopPoll()
+				error.value = '识别时间太长，请重试'
+				return
+			}
+			tries.value++
+			try {
+				const r = await api.getReport(reportId)
+				if (r.status !== 'processing') {
+					stopPoll()
+					report.value = r
+				}
+			} catch (e) {
+				// 单次失败就停，不要连着弹 15 次同样的错
+				stopPoll()
+				error.value = errText(e)
+			}
+		}, POLL_MS)
+	}
+
+	async function choose () {
+		error.value = ''
+		let path = ''
+		try {
+			path = await pickImage()
+		} catch (e) {
+			error.value = errText(e)
+			return
+		}
+		if (path === '') return
+		imgPath.value = path
+		imgName.value = path.slice(path.lastIndexOf('/') + 1)
+		report.value = null
+	}
+
+	async function upload () {
+		error.value = ''
+		if (session.patientId === '') {
+			error.value = '请先回首页选择就诊人'
+			return
+		}
+		if (imgPath.value === '') {
+			error.value = '先选一张报告图片'
+			return
+		}
+		uploading.value = true
+		try {
+			const res = await api.uploadReport(imgPath.value, session.patientId)
+			report.value = null
+			startPoll(res.report_id)
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			uploading.value = false
+		}
+	}
+
+	function flagLabel (flag?: string): string {
+		if (flag === undefined) return '未标注'
+		return FLAG_LABEL[flag] ?? flag
+	}
+
+	function abnormal (flag?: string): boolean {
+		return flag !== undefined && flag !== 'normal'
+	}
+
+	/** 只给了一端就只显示那一端，避免出现「undefined ~ undefined」 */
+	function refRange (it: ReportItem): string {
+		const low = it.ref_low
+		const high = it.ref_high
+		if (!hasNum(low) && !hasNum(high)) return '—'
+		if (!hasNum(high)) return '≥ ' + low
+		if (!hasNum(low)) return '≤ ' + high
+		return low + ' ~ ' + high
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 32rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	/* 大上传区：整块可点，把「支持什么、用来做什么」说清楚 */
+	.uploader {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		min-height: 320rpx;
+		margin: 20rpx 0 8rpx;
+		padding: 40rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-card);
+		border: 3rpx dashed var(--c-border-dash);
+	}
+
+	.uploaderIcon {
+		font-family: MingluIcons;
+		font-size: 84rpx;
+		line-height: 1;
+		color: var(--c-brand);
+	}
+
+	.uploaderTitle {
+		margin-top: 20rpx;
+		font-size: 28rpx;
+		font-weight: 600;
+		color: var(--c-text);
+	}
+
+	.uploaderDesc {
+		margin-top: 10rpx;
+		font-size: 22rpx;
+		color: var(--c-muted);
+		text-align: center;
+	}
+
+	.preview {
+		width: 100%;
+		height: 420rpx;
+		margin-top: 20rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+	}
+
+	.previewBar {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin: 12rpx 0 4rpx;
+	}
+
+	/* 识别中 */
+	.processing {
+		margin-top: 20rpx;
+		padding: 28rpx;
+		border-radius: 20rpx;
+		background-color: var(--c-card-soft);
+	}
+
+	.progress {
+		margin-top: 20rpx;
+		height: 10rpx;
+		border-radius: 999rpx;
+		background-color: var(--c-border);
+		overflow: hidden;
+	}
+
+	.progressBar {
+		height: 100%;
+		border-radius: 999rpx;
+		background-color: var(--c-brand);
+	}
+
+	/* 指标卡：数值做大，单位缩小，一眼看到重点 */
+	.metricCard {
+		padding: 26rpx 28rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		margin-bottom: 12rpx;
+		border: 2rpx solid var(--c-border);
+	}
+
+	.metricVal {
+		display: flex;
+		flex-direction: row;
+		align-items: flex-end;
+		margin-top: 10rpx;
+	}
+
+	.metricNum {
+		font-size: 48rpx;
+		font-weight: bold;
+		color: var(--c-text);
+		line-height: 1;
+		letter-spacing: -2rpx;
+	}
+
+	.metricUnit {
+		margin-left: 10rpx;
+		font-size: 24rpx;
+		color: var(--c-muted);
+	}
+
+	.summaryCard {
+		padding: 26rpx 28rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card-soft);
+		margin-bottom: 12rpx;
+	}
+
+	.bannerIcon {
+		font-family: MingluIcons;
+		font-size: 44rpx;
+		line-height: 1;
+		color: var(--c-danger);
+		margin-right: 16rpx;
+	}
+
+	.flag {
+		font-size: 24rpx;
+		font-weight: 600;
+	}
+
+	.flagOk {
+		color: var(--c-ok);
+	}
+
+	.flagBad {
+		color: var(--c-danger);
+	}
+</style>

@@ -1,0 +1,277 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<!-- 头像和昵称都在这张卡上直接改，和微信「个人信息」页一个路子：
+			     不再有单独的「更换头像」按钮和「昵称」卡片。 -->
+			<view class="card headCard">
+				<view class="avatarBtn" @tap="openSheet">
+					<image v-if="avatarUrl !== ''" class="avatarBtnImg" :src="avatarUrl" mode="aspectFill" />
+					<text v-else class="avatarBtnText">{{ avatarText }}</text>
+				</view>
+				<view class="grow">
+					<!-- nameBtn 是「有明确尺寸的 view 挂 @tap，里面只包一个孩子」——
+					     蒸汽模式下只有这个形状收得到点击（vapor-mode.md §9b）。
+					     @tap 不能直接挂在 <text> 上，点了没反应。 -->
+					<view class="nameBtn" @tap="startEdit">
+						<text v-if="!editing" class="cardTitle">{{ displayName }}</text>
+						<input v-else class="nameInput" :value="draft" @input="onDraft" @blur="onBlur"
+							placeholder="给自己起个称呼" />
+					</view>
+					<text class="cardMeta">手机号登录</text>
+				</view>
+			</view>
+			<text class="hint">点头像换图片，点名字改称呼。改完点别处，确认后保存。</text>
+
+			<text class="section">账号</text>
+			<view class="card">
+				<view class="rowBetween infoRow">
+					<text class="cardMeta">手机号</text>
+					<text class="val">{{ phoneMasked }}</text>
+				</view>
+				<view class="rowBetween infoRow">
+					<text class="cardMeta">注册时间</text>
+					<text class="val">{{ createdAt }}</text>
+				</view>
+			</view>
+			<text class="hint">手机号是登录凭据，不能在这里改——换号等于换一个新账号，历史数据不跟着走。</text>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 换头像的底部弹层。不用 uni.showActionSheet：蒸汽模式下它的选项行点不动，
+		     弹层能关、相册永远不打开（vapor-mode.md §9d），所以这里用页面内的 .sheetRow 自己画。
+		     mask 挂 @tap 且只包一个子 view，是 §9b 里唯一点得动的形状。 -->
+		<view class="sheetMask" v-if="sheetOpen" @tap="closeSheet">
+			<view class="sheet">
+				<view class="sheetRow" @tap="takePhoto">
+					<text class="sheetText sheetBrand">拍照</text>
+				</view>
+				<view class="sheetRow" @tap="pickAlbum">
+					<text class="sheetText sheetBrand">从相册选择</text>
+				</view>
+				<view class="sheetRow" @tap="closeSheet">
+					<text class="sheetText">取消</text>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { computed, ref } from 'vue'
+	import { api } from '@/api'
+	import { auth, saveAuth } from '@/stores/auth'
+	import { errText } from '@/utils/apierr'
+	import { hasText } from '@/utils/blank'
+	import { pickImage } from '@/utils/pickimage'
+
+	const error = ref('')
+	const sheetOpen = ref(false)
+	const editing = ref(false)
+	const draft = ref('')
+
+	const saved = computed(() => (auth.user === null ? '' : (auth.user.nickname ?? '')))
+
+	/* 契约可选字段，服务端没上传过头像时返回 null（不是 undefined），所以 ?? '' 不能省 */
+	const avatarUrl = computed(() => (auth.user === null ? '' : (auth.user.avatar_url ?? '')))
+
+	onLoad(() => {
+		draft.value = saved.value
+	})
+
+	const displayName = computed(() => (hasText(saved.value) ? saved.value : '明路用户'))
+	const avatarText = computed(() => (hasText(saved.value) ? saved.value.slice(0, 1) : '明'))
+	const phoneMasked = computed(() => (auth.user === null ? '' : auth.user.phone_masked))
+	const createdAt = computed(() => {
+		const iso = auth.user === null ? '' : auth.user.created_at
+		if (iso === '') return '—'
+		const d = new Date(iso)
+		if (isNaN(d.getTime())) return iso
+		return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+	})
+
+	function openSheet () {
+		sheetOpen.value = true
+	}
+
+	function closeSheet () {
+		sheetOpen.value = false
+	}
+
+	function startEdit () {
+		draft.value = saved.value
+		editing.value = true
+	}
+
+	function onDraft (e: any) {
+		draft.value = e.detail.value
+	}
+
+	/** 「点别处」就是 input 失焦。没改直接收起，改了先问一句再落库。 */
+	function onBlur () {
+		const next = draft.value.trim()
+		editing.value = false
+		if (next === saved.value) return
+		if (next === '') {
+			error.value = '称呼不能为空，已保留原来的。'
+			return
+		}
+		uni.showModal({
+			title: '保存称呼',
+			content: '把称呼改成「' + next + '」？',
+			success: (r: any) => {
+				if (r.confirm) save(next)
+			}
+		})
+	}
+
+	async function save (next: string) {
+		error.value = ''
+		try {
+			const user = await api.updateMe(next)
+			// token 不变，只换 user；auth.user 换了首页问候语和「我的」页顶部才会跟着变
+			saveAuth(auth.token, user)
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	function takePhoto () {
+		closeSheet()
+		pickFrom('camera')
+	}
+
+	function pickAlbum () {
+		closeSheet()
+		pickFrom('album')
+	}
+
+	async function pickFrom (source: 'album' | 'camera') {
+		error.value = ''
+		let path = ''
+		try {
+			path = await pickImage(source)
+		} catch (e) {
+			error.value = errText(e)
+			return
+		}
+		// 空串是用户取消，不当错误
+		if (path === '') return
+		await uploadAvatar(path)
+	}
+
+	async function uploadAvatar (path: string) {
+		error.value = ''
+		try {
+			// 上传成功服务端直接返回更新后的账号，不用再拉一次
+			const user = await api.uploadAvatar(path)
+			saveAuth(auth.token, user)
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 24rpx 32rpx 40rpx;
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.headCard {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	/* 名字这一行整块可点。不写宽度——父view是纵向 flex，align-items 默认 stretch，
+	   它天然占满一行，尺寸是有的（§9b 要的就是这个）。 */
+	.nameBtn {
+		flex-direction: row;
+		align-items: center;
+		min-height: 52rpx;
+	}
+
+	.nameInput {
+		width: 100%;
+		font-size: 30rpx;
+		font-weight: bold;
+		color: var(--c-text);
+	}
+
+	/* 不用 .headCard .avatar：蒸汽模式不支持后代选择器，那条规则会被静默丢掉（规则 7）。
+	   图片版单独一个类，尺寸跟全局 .avatar 对齐。 */
+	.headAvatarImg {
+		width: 72rpx;
+		height: 72rpx;
+		border-radius: 50%;
+		margin-right: 20rpx;
+		flex-shrink: 0;
+	}
+
+	.avatarBtnImg {
+		width: 72rpx;
+		height: 72rpx;
+		border-radius: 50%;
+	}
+
+	.headAvatarText {
+		margin-right: 20rpx;
+	}
+
+	/* ---- 换头像的底部弹层 ---- */
+	.sheetMask {
+		position: fixed;
+		left: 0;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.45);
+		flex-direction: column;
+		justify-content: flex-end;
+	}
+
+	.sheet {
+		padding: 0 24rpx 40rpx;
+	}
+
+	.sheetRow {
+		background-color: var(--c-card);
+		border-radius: 20rpx;
+		margin-bottom: 16rpx;
+		padding: 30rpx 0;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.sheetText {
+		font-size: 30rpx;
+		color: var(--c-text);
+	}
+
+	.sheetBrand {
+		color: var(--c-brand);
+		font-weight: 600;
+	}
+
+	.infoRow {
+		padding: 12rpx 0;
+	}
+
+	.val {
+		font-size: 26rpx;
+		color: var(--c-text);
+	}
+</style>
