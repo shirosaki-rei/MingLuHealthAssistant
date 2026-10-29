@@ -106,8 +106,3 @@ cd services/api && python -m pytest     # safety / contract / journey / architec
 [`docs/上线前缺口清单.md`](docs/上线前缺口清单.md)。
 
 ---
-
-## 给 AI Agent 的话
-
-`CLAUDE.md` 是本仓库的 agent 指引，含全部硬约束与专题文档索引（`docs/agent/` 四份）。
-`.workbuddy/memory/` 是项目决策日志，含每轮「为什么这么决定」——改架构前值得翻。
