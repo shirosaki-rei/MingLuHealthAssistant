@@ -199,7 +199,10 @@ def _orchestrate(
         tokens_in=llm.estimate_tokens("".join(m["content"] for m in messages)),
         tokens_out=0,
         latency_ms=_ms(started),
-        stream=provider.stream(messages, max_tokens=2000),
+        # 不传 max_tokens：思考模型（glm-5.x）的推理长度不可预测（同一句话实测
+        # 从几百到几千 token 波动），写死额度会把正文挤成空 content——用户看到的
+        # 气泡里只剩免责声明。下面 _extract_memories 早就是这个结论，这里漏改过。
+        stream=provider.stream(messages),
     )
 
 

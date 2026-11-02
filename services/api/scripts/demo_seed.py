@@ -23,7 +23,7 @@ import os
 import random
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -36,6 +36,18 @@ PHONE = os.getenv("DEMO_PHONE", "13800000001")
 
 
 def read_code(phone: str) -> str | None:
+    """本地开发读 SQLite；容器里读 DATABASE_URL 指向的 PostgreSQL。
+
+    容器里没有 minglu.db，直连 sqlite 会在新建的空库上报 no such table，
+    表现为「读不到验证码」——虽然码其实已经在 PG 里了。
+    """
+    dsn = os.getenv("DATABASE_URL", "")
+    if dsn.startswith(("postgresql", "postgres")):
+        import psycopg
+
+        with psycopg.connect(dsn.replace("postgresql+psycopg://", "postgresql://")) as con:
+            row = con.execute("SELECT code FROM sms_code WHERE phone = %s", (phone,)).fetchone()
+            return row[0] if row else None
     con = sqlite3.connect(DB_PATH)
     try:
         row = con.execute("SELECT code FROM sms_code WHERE phone = ?", (phone,)).fetchone()
@@ -45,7 +57,9 @@ def read_code(phone: str) -> str | None:
 
 
 def main():
-    client = httpx.Client(base_url=BASE, timeout=40.0)
+    # 流式对话是逐 token 产出的，一整段回复可能超过 40s（首次调用还要算上
+    # provider 冷启动）。read 超时放宽到 120s，connect 仍收紧到 10s。
+    client = httpx.Client(base_url=BASE, timeout=httpx.Timeout(120.0, connect=10.0))
     print(f"目标后端：{BASE}")
     print(f"演示手机号：{PHONE}\n")
 
@@ -174,7 +188,9 @@ def main():
         print("  没有在线医生，跳过下单")
 
     # ---------- 提醒 ----------
-    now = datetime.now()
+    # 必须显式带时区：容器里 datetime.now() 拿到的是 UTC，而后端把不带时区的时间
+    # 一律按 Asia/Shanghai 解释，于是「1 小时后」会被判成「8 小时前」直接 400。
+    now = datetime.now(timezone(timedelta(hours=8)))
 
     def safe_time(hours: float) -> datetime:
         """避开 23:00-7:00 静默时段，撞上了就顺延到次日 8 点"""

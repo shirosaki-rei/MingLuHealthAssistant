@@ -15,6 +15,9 @@ COPY --from=builder /install /usr/local
 WORKDIR /srv
 COPY app ./app
 COPY migrations ./migrations
+# demo_seed / demo_reset / smoke_test 等运维脚本。不 COPY 进去的话
+# `docker compose exec api python scripts/demo_seed.py` 会报 No such file。
+COPY scripts ./scripts
 COPY alembic.ini pytest.ini ./
 
 # 非 root 运行
