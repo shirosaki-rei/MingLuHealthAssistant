@@ -14,7 +14,10 @@ from pathlib import Path
 # 服务根目录 = services/api（本文件在 app/config.py，parents[1] 即 services/api）
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 # 仓库根 = .env 所在处（services/api/app/config.py 往上数四级）
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# 容器里 app/ 被拷到 /srv/app，只有三级可上溯，此时降级为 SERVICE_ROOT：
+# 容器内配置全由 compose 注入，不依赖读 .env（`_load_dotenv` 找不到文件会直接返回）。
+_here = Path(__file__).resolve()
+PROJECT_ROOT = _here.parents[3] if len(_here.parents) > 3 else SERVICE_ROOT
 
 
 def _load_dotenv() -> None:

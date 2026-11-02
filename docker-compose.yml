@@ -24,6 +24,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    # 宿主机重启 / docker 守护进程重启后必须自己回来，否则 api 连不上库。
+    # 默认的 no 会让数据库安静地躺在 Exited 状态，表现为「api 一直 resolve host 'db'」。
+    restart: unless-stopped
     # 不对外暴露端口，只有同网络的 api 能连
 
   migrate:
@@ -32,6 +35,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://minglu:${POSTGRES_PASSWORD:-minglu-dev-only}@db:5432/minglu
       MINGLU_ENV: prod
+      # migrate 只做 DDL，却会 import get_settings()，一样要过 prod 启动自检。
+      # 少这三项就 exit 1，api 又被 depends_on 卡着起不来 —— 表现为「库是健康的，
+      # 服务就是不出现」。默认值与 app/config.py 保持一致，缺省时照样能正确报错。
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-dev-only-admin-password}
+      PAYMENT_MOCK: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -44,6 +53,9 @@ services:
       MINGLU_ENV: prod
       # 不设就用 dev 默认值，但 MINGLU_ENV=prod 下 app/config.py 的启动自检会直接拒绝起来
       JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret}
+      # 运营后台账号（/admin）。prod 自检要求它非默认值，不同步传进来就会拒绝启动。
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-dev-only-admin-password}
       # 沙箱支付：生产必须关闭
       PAYMENT_MOCK: "false"
       # 境内模型服务商，白名单在 app/platform/llm.py 硬编码

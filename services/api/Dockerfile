@@ -3,7 +3,10 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /srv
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# 默认走清华源：官方 PyPI 在国内服务器只有 ~20KB/s，装这 12 个包要十几分钟。
+# 海外构建可覆盖：--build-arg PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir --prefix=/install -i ${PIP_INDEX_URL} -r requirements.txt
 
 FROM python:3.12-slim
 
