@@ -102,16 +102,22 @@ def _check_daily_cap(db: Session, patient_id: str, kind: str) -> None:
 def pending_reminders(
     db: DbDep,
     user: CurrentUser,
+    patient_id: str = Query(..., description="只看这个就诊人的提醒"),
     within_hours: int = Query(24, ge=1, le=72),
     _: None = Depends(require_action("reminder.pending")),
 ) -> schemas.PendingReminderList:
     """客户端在启动时与每次进入提醒页时调用，用于全量重排本地闹钟。"""
+    # 归属校验：不校验就能拿别人的 patient_id 读到别人的用药安排
+    get_owned_patient(db, user.id, patient_id)
     horizon = now() + timedelta(hours=within_hours)
     items = list(
         db.scalars(
             select(models.Reminder)
             .where(
                 models.Reminder.user_id == user.id,
+                # 提醒创建时就绑了人，查询却一直没按人过滤——账号下三个就诊人的
+                # 提醒全混在一起，首页"今天的安排"切人完全不变化。
+                models.Reminder.patient_id == patient_id,
                 models.Reminder.status == "pending",
                 models.Reminder.fire_at <= horizon,
             )

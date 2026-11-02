@@ -209,9 +209,10 @@ export const api = {
 
 	// ---------- reminder ----------
 	createReminder: (body: ReminderCreate) => request<Reminder>('/v1/reminders', { method: 'POST', data: body }),
-	/** 启动时与每次进提醒页都调，用于全量重排本机闹钟 */
-	pendingReminders: (withinHours = 24) =>
-		request<PendingResult>('/v1/reminders/pending', { query: { within_hours: withinHours } }),
+	/** 启动时与每次进提醒页都调，用于全量重排本机闹钟。必须带 patient_id——
+	 *  服务端按人过滤，不传 400，传别人的 ID 是 404。 */
+	pendingReminders: (patientId: string, withinHours = 24) =>
+		request<PendingResult>('/v1/reminders/pending', { query: { patient_id: patientId, within_hours: withinHours } }),
 	deleteReminder: (reminderId: string) => request<null>('/v1/reminders/' + reminderId, { method: 'DELETE' }),
 
 	// ---------- report ----------

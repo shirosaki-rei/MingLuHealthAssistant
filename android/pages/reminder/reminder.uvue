@@ -191,7 +191,7 @@
 	async function load () {
 		loading.value = true
 		try {
-			const res = await api.pendingReminders(WITHIN_HOURS)
+			const res = await api.pendingReminders(session.patientId, WITHIN_HOURS)
 			items.value = res.items
 		} catch (e) {
 			error.value = errText(e)

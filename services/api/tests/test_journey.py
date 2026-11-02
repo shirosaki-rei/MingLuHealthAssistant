@@ -389,7 +389,7 @@ def test_main_journey(client):
 
 
 
-    pending = actor.get("/v1/reminders/pending?within_hours=72")
+    pending = actor.get(f"/v1/reminders/pending?patient_id={patient['id']}&within_hours=72")
 
     assert pending.status_code == 200, pending.text
 

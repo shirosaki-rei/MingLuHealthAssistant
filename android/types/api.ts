@@ -1309,10 +1309,15 @@ export interface paths {
          * 待触发的提醒（客户端同步用）
          * @description 客户端在**启动时**与**每次进入提醒页时**调用，用于全量重排本地闹钟。
          *     这是开机恢复失效时的兜底：只要用户打开过 App，未过期的提醒就能恢复。
+         *
+         *     **按就诊人过滤**：提醒创建时绑到具体的人（`patient_id` 必填），查询也必须按人。
+         *     不过滤的话账号下三个就诊人的提醒会混在一起，首页"今天的安排"切人完全不变化。
          */
         get: {
             parameters: {
-                query?: {
+                query: {
+                    /** @description 只看这个就诊人的提醒。传不属于当前账号的 ID 返回 404。 */
+                    patient_id: string;
                     within_hours?: number;
                 };
                 header?: never;

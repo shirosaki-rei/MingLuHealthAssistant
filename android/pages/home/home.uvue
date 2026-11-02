@@ -348,7 +348,7 @@
 	async function loadPanels () {
 		if (session.patientId === '') return
 		try {
-			const res = await api.pendingReminders(24)
+			const res = await api.pendingReminders(session.patientId, 24)
 			reminders.value = res.items
 		} catch (e) {
 			// 首页这块是附属信息，拉不到不影响主流程；但网络不通要挂横幅，
