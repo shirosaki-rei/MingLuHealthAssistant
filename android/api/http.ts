@@ -19,15 +19,17 @@ export interface ApiFailure {
 }
 
 /**
- * 真机调试改这里：填电脑的 WLAN 局域网 IP（不是 WSL/虚拟网卡的地址）。
+ * 真机调试改这里。**当前走 USB 通道**：电脑连手机热点时二层不通（热点的客户端
+ * 隔离会挡掉电脑 IP），所以用 `adb reverse` 把手机的 127.0.0.1:8000 转到电脑上，
+ * BASE_URL 跟着填 127.0.0.1。每次插线后重跑一次：
  *
- * 查法：cmd 里执行 ipconfig，看「无线局域网适配器 WLAN」下的 IPv4 地址。
- * 注意：
- * - localhost / 127.0.0.1 在手机上指向手机自己，连不上电脑
- * - 172.23.x.x 这类一般是 WSL 或 Hyper-V 的虚拟网卡，手机访问不到
- * - 换 Wi-Fi 或重连后 IP 会变，连不上时先来这行确认
+ *     adb reverse tcp:8000 tcp:8000
+ *
+ * 只想用 Wi-Fi 直连时，改成电脑的 WLAN IPv4（ipconfig 查），并先在手机浏览器确认
+ * `http://<电脑IP>:8000/docs` 能打开——打不开就是热点隔离，不是代码问题。
+ * 上线前这里必须换成正式域名。
  */
-export const BASE_URL = 'http://10.43.253.140:8000'
+export const BASE_URL = 'http://127.0.0.1:8000'
 
 interface RequestOptions {
 	method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
