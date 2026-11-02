@@ -87,6 +87,9 @@
 				</view>
 				<view class="empty" v-if="msgs.length === 0">
 					<text class="emptyText">直接说哪里不舒服就行，不用整理措辞。明路会追问几个问题，再整理成能给医生看的病历。</text>
+					<!-- 重新编译/重装会清 storage，session.conversationId 丢了就是空白，
+					     此时用户会以为对话记录没了。实际入口在右上角三个点里，说清楚。 -->
+					<text class="emptyHint">想看之前的对话，点右上角 ··· → 历史对话</text>
 				</view>
 			</scroll-view>
 
