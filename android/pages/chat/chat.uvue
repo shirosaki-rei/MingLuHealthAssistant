@@ -79,8 +79,10 @@
 						<text class="paText">{{ avatar.glyph }}</text>
 					</view>
 					<view :class="m.role === 'user' ? 'bubble bubbleMe' : 'bubble bubbleAi'">
-						<text v-if="m.text !== ''" :class="m.role === 'user' ? 'bubbleTextMe' : 'bubbleText'">{{ m.text }}</text>
-						<text v-else class="bubbleText typing">正在输入…</text>
+						<!-- 按换行拆成多个 text：text 组件不渲染 \n（2026-11-02 实测），
+						     助手"适当分段"的排版要真正生效必须拆节点。.bubble 默认 flex column，多段自然竖排 -->
+						<text v-for="(para, pi) in paras(m.text)" :key="pi" :class="m.role === 'user' ? 'bubbleTextMe' : 'bubbleText'">{{ para }}</text>
+						<text v-if="m.text === ''" class="bubbleText typing">正在输入…</text>
 					</view>
 				</view>
 				<view class="empty" v-if="msgs.length === 0">
@@ -287,6 +289,15 @@
 	const redflag = ref<{ message: string; action: string } | null>(null)
 	const patient = ref<Patient | null>(null)
 	const menuOpen = ref(false)
+
+	/** 按换行拆段落。**text 组件不渲染 \n**（2026-11-02 实测：后端确实吐了 \n，
+	 *  真机上「别赖床；2. 白天午睡」仍然连成一片），所以助手的"适当分段"必须拆成
+	 *  多个 text 节点才能看见。空段滤掉——按句切分会让段首句带上前导 \n。 */
+	function paras (text: string): string[] {
+		if (text === '') return []
+		const out = text.split('\n').filter(p => p.trim() !== '')
+		return out.length === 0 ? [text] : out
+	}
 
 	const presets = ref<Persona[]>([])
 	const mine = ref<Persona[]>([])
