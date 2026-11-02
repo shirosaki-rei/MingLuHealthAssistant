@@ -39,4 +39,4 @@ images/
 .tmpcheck/
 
 # agent
-.workbuddy/
+.workbuddy/*.log
