@@ -87,9 +87,6 @@
 				</view>
 				<view class="empty" v-if="msgs.length === 0">
 					<text class="emptyText">直接说哪里不舒服就行，不用整理措辞。明路会追问几个问题，再整理成能给医生看的病历。</text>
-					<!-- 重新编译/重装会清 storage，session.conversationId 丢了就是空白，
-					     此时用户会以为对话记录没了。实际入口在右上角三个点里，说清楚。 -->
-					<text class="emptyHint">想看之前的对话，点右上角 ··· → 历史对话</text>
 				</view>
 			</scroll-view>
 
@@ -384,8 +381,13 @@
 		// 历史消息要在这儿补：标签页之间是 reLaunch，每跳一次页面整个重建，
 		// msgs 会回到空。不补就是「切走再回来一片空白，发一句话才全冒出来」。
 		// msgs 非空说明刚在本页聊过（onDone 已经拉过），别重复请求。
-		if (session.conversationId !== '' && msgs.value.length === 0) {
-			loadHistory(session.conversationId)
+		if (session.conversationId !== '') {
+			if (msgs.value.length === 0) loadHistory(session.conversationId)
+		} else if (!session.fresh) {
+			// 没有当前会话又不是主动开的新对话：接回这个就诊人最近聊的那次。
+			// 冷启动、换就诊人、重新编译清了 storage 都会走到这儿——用户预期是
+			// 「接着上次聊」，不是对着一片空白以为记录丢了。
+			resumeLast()
 		}
 	})
 
@@ -488,9 +490,36 @@
 		closeMenu()
 		session.conversationId = ''
 		session.conversationPatientId = ''
+		// 否则 onPageShow 会把上次的会话又接回来，「开新对话」看着没反应
+		session.fresh = true
 		msgs.value = []
 		redflag.value = null
 		error.value = ''
+	}
+
+	/** 接回这个就诊人最近一次对话。按 patient_id 过滤，否则会把就诊人也改回
+	 *  最近会话所属的人（覆盖用户在首页做的选择）。恢复失败不打扰——空白态照样能聊。 */
+	async function resumeLast () {
+		try {
+			const res = await api.listConversations({
+				patient_id: session.patientId,
+				page: 1,
+				page_size: 1
+			})
+			const row = res.items[0]
+			if (row === undefined) return
+			session.conversationId = row.id
+			session.conversationPatientId = row.patient_id
+			// 早期会话没有 persona_id，退回空串（服务端按默认助手安安处理）
+			session.personaId = row.persona_id ?? ''
+			msgs.value = []
+			redflag.value = null
+			error.value = ''
+			await loadHistory(row.id)
+			refreshAvatars()
+		} catch (e) {
+			// 静默：这只是个便利恢复，不是主流程
+		}
 	}
 
 	function openSheetFromMenu () {
@@ -532,6 +561,8 @@
 		if (p.id !== session.personaId) {
 			session.conversationId = ''
 			session.conversationPatientId = ''
+			// 换助手就是要开新话题，别让 onPageShow 把旧会话接回来
+			session.fresh = true
 			msgs.value = []
 			redflag.value = null
 		}
@@ -685,6 +716,8 @@
 				session.conversationId = e.conversation_id
 				// 记下这个会话属于谁，换就诊人时靠它判断要不要丢（见 onPageShow）
 				session.conversationPatientId = session.patientId
+				// 已经聊上了，下次进来直接续这次，不用再走自动恢复
+				session.fresh = false
 				sending.value = false
 				task = null
 				loadHistory(e.conversation_id)

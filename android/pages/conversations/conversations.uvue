@@ -68,6 +68,8 @@
 		session.conversationId = c.id
 		// 必须一起写：对话页靠它判断"换过就诊人没有"，漏写会被当成换人从而清掉会话
 		session.conversationPatientId = c.patient_id
+		// 用户明确选了某次对话，不是自动恢复，别被 onPageShow 又接回"最近一次"
+		session.fresh = false
 		uni.reLaunch({ url: '/pages/chat/chat' })
 	}
 

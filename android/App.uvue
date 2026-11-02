@@ -709,14 +709,6 @@
 		text-align: center;
 	}
 
-	.emptyHint {
-		margin-top: 16rpx;
-		font-size: 24rpx;
-		color: var(--c-brand);
-		line-height: 1.6;
-		text-align: center;
-	}
-
 	/* ---------------- 首页宫格 ---------------- */
 	.tiles {
 		display: flex;
