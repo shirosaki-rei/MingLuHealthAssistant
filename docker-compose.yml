@@ -46,6 +46,26 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # 反向代理 + 自动 HTTPS。放在 api 前面，对外只暴露 80/443。
+  #
+  # 为什么是 Caddy：证书的申请与续期全自动，nginx + certbot 那套要自己写
+  # 续期脚本，漏一步就是 80 天后证书静默过期，用户看到的是「连不上」。
+  #
+  # caddy_data 卷存证书和私钥，**别删**——删了下次重新签，而 Let's Encrypt
+  # 有速率限制（同一域名每周 5 次）。
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - api
+
   api:
     build: ./services/api
     environment:
@@ -66,6 +86,9 @@ services:
       STORAGE_DIR: /srv/var/storage
     volumes:
       - apistorage:/srv/var/storage
+    # 演示期先留着这个映射：App 直连 http://<域名或IP>:8000，不经过 Caddy，
+    # 未备案也能跑。等 ICP 备案通过、Caddyfile 换成域名形态（自动 HTTPS）之后，
+    # 再把这段换成 expose: ["8000"]——那时对外只留 80/443，8000 不再裸奔。
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -76,3 +99,4 @@ services:
 volumes:
   pgdata:
   apistorage:
+  caddy_data:
