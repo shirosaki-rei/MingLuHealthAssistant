@@ -25,9 +25,11 @@ DB = API_ROOT / "minglu.db"
 # conversation_id 删，它没有 user_id 列。
 USER_TABLES = [
     "agent_memory", "ai_log", "consent_log", "consult_order", "conversation",
-    "membership", "notify_log", "patient_profile", "pre_consult", "reminder",
-    "report_doc", "share_export", "timeline_event",
+    "membership", "notify_log", "patient_profile", "pre_consult",
+    "reminder", "report_doc", "share_export", "timeline_event",
 ]
+# 归属列名不叫 user_id 的表（persona 用的是 owner_user_id）
+OWNER_COL = {"persona": "owner_user_id"}
 
 
 def main() -> int:
@@ -61,8 +63,9 @@ def main() -> int:
             print(f"message -{n}")
 
         total = 0
-        for table in USER_TABLES:
-            n = con.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,)).rowcount
+        for table in USER_TABLES + list(OWNER_COL):
+            col = OWNER_COL.get(table, "user_id")
+            n = con.execute(f"DELETE FROM {table} WHERE {col} = ?", (uid,)).rowcount
             total += n
             if n:
                 print(f"{table} -{n}")

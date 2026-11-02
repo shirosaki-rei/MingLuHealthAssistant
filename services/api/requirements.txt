@@ -7,3 +7,6 @@ PyJWT==2.15.1
 python-multipart==0.0.32
 pytest==9.1.1
 httpx==0.28.1
+sqladmin==0.32.0
+itsdangerous==2.2.0
+greenlet==3.5.6

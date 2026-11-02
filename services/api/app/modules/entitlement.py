@@ -60,6 +60,9 @@ MEDICAL_ACTIONS = frozenset(
         "memory.update",
         "memory.delete",
         "chat.history",
+        # 会话列表与归档：读/整理自己的对话记录，属于 PRD §4.9「会员过期不收回数据」
+        "conversations.list",
+        "conversations.archive",
         "reminder.pending",
         "reminder.delete",
         "report.read",

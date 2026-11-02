@@ -45,10 +45,10 @@
 		"distribute": {
 			"icons": {
 				"android": {
-					"hdpi": "",
-					"xhdpi": "",
-					"xxhdpi": "",
-					"xxxhdpi": ""
+					"hdpi": "/static/icons/hdpi.png",
+					"xhdpi": "/static/icons/xhdpi.png",
+					"xxhdpi": "/static/icons/xxhdpi.png",
+					"xxxhdpi": "/static/icons/xxxhdpi.png"
 				}
 			}
 		}
@@ -63,10 +63,10 @@
 			},
 			"modules": {},
 			"icons": {
-				"hdpi": "",
-				"xhdpi": "",
-				"xxhdpi": "",
-				"xxxhdpi": ""
+				"hdpi": "/static/icons/hdpi.png",
+				"xhdpi": "/static/icons/xhdpi.png",
+				"xxhdpi": "/static/icons/xxhdpi.png",
+				"xxxhdpi": "/static/icons/xxxhdpi.png"
 			},
 			"splashScreens": {
 				"default": {}

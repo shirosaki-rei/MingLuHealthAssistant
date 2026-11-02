@@ -8,6 +8,21 @@ import pytest
 
 from .conftest import Actor, make_member, parse_sse
 
+def _future(days: int, hour: int = 9, minute: int = 0) -> str:
+    """days 天后的时刻，ISO 8601 带 +08:00。
+
+    提醒的 fire_at 必须晚于当前时间，写死日期会随现实时间过期——
+    2026-11-01 就刚让一条用例红得很莫名。动态算才不会再犯。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    tz = timezone(timedelta(hours=8))
+    return (datetime.now(tz) + timedelta(days=days)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    ).isoformat()
+
+
+
 # 就医路径全链路：(方法, 路径, 请求体)。patient_id 由 fixture 注入。
 MEDICAL_PATH_CASES = [
     ("preconsult.start", "POST", "/v1/preconsult/start",
@@ -277,7 +292,9 @@ def test_timestamps_are_iso8601_with_timezone(client):
             "patient_id": patient["id"],
             "kind": "medication",
             "title": "吃降压药",
-            "fire_at": "2026-11-01T09:00:00+08:00",
+            # 动态算：写死日期会随现实时间过期（2026-11-01 就刚过期过一次，
+            # 被"触发时间需晚于当前时间"挡下，测试红得很莫名）
+            "fire_at": _future(1, 9),
         },
     )
     assert reminder.status_code == 201, reminder.text

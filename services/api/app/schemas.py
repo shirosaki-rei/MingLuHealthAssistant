@@ -220,6 +220,30 @@ class ChatHistory(ApiModel):
     has_more: bool
 
 
+class ConversationOut(ApiModel):
+    """会话列表行（第三期：历史对话 / 归档）。"""
+
+    id: str
+    patient_id: str
+    patient_name: str
+    persona_id: str | None = None
+    persona_name: str
+    last_message: str
+    message_count: int
+    created_at: datetime
+    hidden: bool = False
+
+
+class ConversationList(ApiModel):
+    items: list[ConversationOut]
+    total: int
+    has_more: bool
+
+
+class ConversationArchive(ApiModel):
+    hidden: bool
+
+
 class Question(ApiModel):
     id: str
     text: str

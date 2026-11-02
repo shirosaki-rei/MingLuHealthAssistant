@@ -71,11 +71,15 @@ SAFETY_PROMPT = """你是「明路」的 AI 健康助手，不是医生。
 2. 不推荐处方药，不给剂量
 3. 不承诺疗效
 4. 不宣称任何医疗资历、学历、执业机构；描述知识来源只能说「我查到了什么」
-5. 涉及症状、指标、用药时语气保持中性，不使用口癖与幽默
-6. 每条回答结尾给出就医指征：什么情况该去医院、看什么科
-7. 主动声明自己是 AI，不能替代医生面诊
+5. 医学内容（症状、指标、用药、检查）表述保持严谨中性；**其他内容不受此限**——
+   问候、闲聊、情绪安抚可以充分展现角色性格，该温柔温柔，该活泼活泼
+6. 涉及症状或指标时，给出该看哪个科室、什么情况要尽快就医
+7. 身份声明只说一次：本次对话第一次回复、或给出具体就医/用药建议时，简单带一句自己是 AI；
+   **不要每轮重复**（界面输入框上方有常驻声明，反复讲会显得像客服）
 
-人设只影响语气与称呼，不影响以上任何一条。"""
+人设只影响语气与称呼，不影响以上任何一条。
+8. 只用纯文本回答：不要用 markdown 语法（** 粗体、# 标题、- 列表、> 引用、表格都不要）。
+   需要分点时用「1. 2. 3.」或分号，一句话说清一条。"""
 
 DISCLAIMER = "以上内容由 AI 生成，仅供参考，不能替代医生面诊。"
 
@@ -83,7 +87,7 @@ DISCLAIMER = "以上内容由 AI 生成，仅供参考，不能替代医生面�
 class Provider(Protocol):
     name: str
 
-    def complete(self, messages: list[dict[str, str]], max_tokens: int) -> LlmReply: ...
+    def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply: ...
 
 
 def estimate_tokens(text: str) -> int:
@@ -100,7 +104,7 @@ class LocalProvider:
 
     name = "local-template"
 
-    def complete(self, messages: list[dict[str, str]], max_tokens: int) -> LlmReply:
+    def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply:
         system = messages[0]["content"] if messages else ""
         knowledge = _section(system, "【权威资料】")
 
@@ -121,7 +125,6 @@ class LocalProvider:
                     body,
                     "要不要我把这些整理一下，帮你理清该看哪个科室？",
                     "如果症状持续或加重，建议尽快到线下就诊。",
-                    DISCLAIMER,
                 ),
             )
         )
@@ -162,19 +165,38 @@ class OpenAICompatProvider:
         self._base_url = base_url
         self._key = settings.llm_api_key
         self._model = settings.llm_model or "default"
+        self._effort = settings.llm_reasoning_effort
         self._client = httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0))
 
-    def complete(self, messages: list[dict[str, str]], max_tokens: int) -> LlmReply:
+    def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply:
+        # max_tokens=None 时不传这个字段，用模型默认上限。思考模型的推理长度不可预测
+        # （实测同一条输入推理从几百到四千 token 波动），写死额度会把正文挤成空 content。
+        body: dict = {"model": self._model, "messages": messages, "stream": False}
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if self._effort:
+            body["reasoning_effort"] = self._effort
         response = self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._key}"},
-            json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "stream": False},
+            json=body,
         )
         response.raise_for_status()
         payload = response.json()
         usage = payload.get("usage") or {}
+        # 思考模型（deepseek-r1 / glm-z1 / qwq）把推理放在 reasoning_content，正文仍在 content。
+        # 这里**只取 content**：思考过程不该给用户看，也不该进 SSE 的按句切分。
+        message = payload["choices"][0]["message"]
+        text = (message.get("content") or "").strip()
+        if not text:
+            # 思考模型把 max_tokens 全花在推理上时 content 会是空的。返回空文本会让用户
+            # 看到空白气泡，宁可抛出去走降级（知识库模板兜底），那至少是句人话。
+            raise ValueError(
+                f"模型 {self._model!r} 返回了空 content"
+                "（思考模型先把预算用在推理上，把 max_tokens 调大再试）"
+            )
         return LlmReply(
-            text=payload["choices"][0]["message"]["content"],
+            text=text,
             tokens_in=int(usage.get("prompt_tokens", 0)),
             tokens_out=int(usage.get("completion_tokens", 0)),
             model=payload.get("model", self._model),
@@ -186,12 +208,18 @@ _provider_failed = False
 
 
 def get_provider() -> Provider | None:
-    """拿不到可用 provider 时返回 None，调用方走降级路径。"""
+    """拿不到可用 provider 时返回 None，调用方走降级路径。
+
+    每次决策都打 info 日志：配错 base_url（不在白名单、缺 key）时**不会报错**，
+    只会静默降级成模板回复，用户看到知识库卡片还以为模型生效了。
+    所以「当前用哪个 provider」必须能在启动日志里一眼看到。
+    """
     global _provider, _provider_failed
     if _provider is not None or _provider_failed:
         return _provider
     if not get_settings().llm_base_url:
         _provider = LocalProvider()
+        log.info("llm provider = local-template（未配 LLM_BASE_URL，回复走知识库模板兜底）")
         return _provider
     try:
         _provider = OpenAICompatProvider()
@@ -199,6 +227,7 @@ def get_provider() -> Provider | None:
         log.warning("llm provider 不可用，降级到模板：%s", exc)
         _provider_failed = True
         return None
+    log.info("llm provider = openai-compat，model = %s", get_settings().llm_model or "default")
     return _provider
 
 

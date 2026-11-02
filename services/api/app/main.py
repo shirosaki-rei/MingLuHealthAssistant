@@ -104,6 +104,12 @@ def create_app(*, run_seed: bool = True) -> FastAPI:
     _static.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(_static)), name="static")
 
+    # 运营后台（/admin，内部 Web）。挂在 /v1 路由之后：它的路由不以 /v1/ 开头，
+    # 不参与上面的 action 自检，也不进 OpenAPI 契约。
+    from .platform.admin import mount_admin
+
+    mount_admin(app)
+
     return app
 
 

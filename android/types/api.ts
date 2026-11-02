@@ -605,6 +605,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话列表（第三期：历史对话 / 归档）
+         * @description 当前用户的会话，按创建时间倒序。传 `patient_id` 只列该就诊人的；
+         *     不传则列全部（客户端自行按就诊人 / 助手分组）。
+         *     归档过的会话默认不返回，`include_hidden=true` 时才带上。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["Page"];
+                    page_size?: components["parameters"]["PageSize"];
+                    patient_id?: string;
+                    include_hidden?: boolean;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["ConversationOut"][];
+                            total: number;
+                            has_more: boolean;
+                        };
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 归档 / 恢复会话
+         * @description 软归档：置 `hidden=true` 后它从主列表消失，但消息一条不删，
+         *     `include_hidden=true` 仍能查回来。删除会话没有接口——医疗场景不留硬删。
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    conversation_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        hidden: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ConversationOut"];
+                    };
+                };
+                default: components["responses"]["Error"];
+            };
+        };
+        trace?: never;
+    };
     "/v1/preconsult/start": {
         parameters: {
             query?: never;
@@ -1822,6 +1922,8 @@ export interface paths {
                          *         "memory.update",
                          *         "memory.delete",
                          *         "chat.history",
+                         *         "conversations.list",
+                         *         "conversations.archive",
                          *         "reminder.pending",
                          *         "reminder.delete",
                          *         "report.read",
@@ -1972,6 +2074,23 @@ export interface components {
             weight_kg?: number;
             chronic_conditions?: string[];
             allergy_notes?: string;
+        };
+        ConversationOut: {
+            id: string;
+            patient_id: string;
+            /** @description 就诊人姓名，列表上直接显示 */
+            patient_name: string;
+            /** @description 会话创建时用的助手；早期数据可能为 null */
+            persona_id?: string | null;
+            /** @description 助手名，null 时是「明路助手」 */
+            persona_name: string;
+            /** @description 末条消息正文截断（≤60 字），列表摘要用 */
+            last_message: string;
+            message_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description true = 已归档 */
+            hidden: boolean;
         };
         Persona: {
             id: string;

@@ -29,6 +29,12 @@
 			<view class="menuMask" v-if="menuOpen" @tap="closeMenu">
 				<view class="menuSpacer"></view>
 				<view class="menu" @tap.stop="keepOpen">
+					<view class="menuRow" @tap="newChat">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('add') }}</text>
+							<text class="menuText grow">开新对话</text>
+						</view>
+					</view>
 					<view class="menuRow" @tap="goPatients">
 						<view class="menuRowIn">
 							<text class="menuIcon">{{ ic('group') }}</text>
@@ -47,6 +53,12 @@
 						<view class="menuRowIn">
 							<text class="menuIcon">{{ ic('assignment') }}</text>
 							<text class="menuText grow">开始预问诊</text>
+						</view>
+					</view>
+					<view class="menuRow" @tap="goConversations">
+						<view class="menuRowIn">
+							<text class="menuIcon">{{ ic('forum') }}</text>
+							<text class="menuText grow">历史对话</text>
 						</view>
 					</view>
 					<view class="menuRow" @tap="goDoctors">
@@ -344,7 +356,23 @@
 			patient.value = null
 			return
 		}
+		// 换过就诊人：旧会话聊的是另一个人的情况，接着续会张冠李戴（后端 history 也按
+		// conversation 取），必须丢掉开新的。用 conversationPatientId 比而不能比页面级变量——
+		// 标签页之间是 reLaunch，每跳一次页面整个重建，本地变量记不住上次是谁。
+		if (session.conversationPatientId !== '' && session.conversationPatientId !== session.patientId) {
+			session.conversationId = ''
+			session.conversationPatientId = ''
+			msgs.value = []
+			redflag.value = null
+			error.value = ''
+		}
 		loadPatient()
+		// 历史消息要在这儿补：标签页之间是 reLaunch，每跳一次页面整个重建，
+		// msgs 会回到空。不补就是「切走再回来一片空白，发一句话才全冒出来」。
+		// msgs 非空说明刚在本页聊过（onDone 已经拉过），别重复请求。
+		if (session.conversationId !== '' && msgs.value.length === 0) {
+			loadHistory(session.conversationId)
+		}
 	})
 
 	onLoad(() => {
@@ -413,6 +441,11 @@
 		uni.navigateTo({ url: '/pages/preconsult/preconsult' })
 	}
 
+	function goConversations () {
+		closeMenu()
+		uni.navigateTo({ url: '/pages/conversations/conversations' })
+	}
+
 	function goDoctors () {
 		closeMenu()
 		uni.reLaunch({ url: '/pages/doctors/doctors' })
@@ -432,6 +465,18 @@
 
 	function closeMenu () {
 		menuOpen.value = false
+	}
+
+	/** 开新对话：丢掉当前会话 id，下一句话就是新会话的第一轮。
+	 *  旧消息不删也不隐藏——库里留着（`hidden` 字段给第三期的归档列表用），
+	 *  这里只是让主对话从头开始，用户想分话题时用。 */
+	function newChat () {
+		closeMenu()
+		session.conversationId = ''
+		session.conversationPatientId = ''
+		msgs.value = []
+		redflag.value = null
+		error.value = ''
 	}
 
 	function openSheetFromMenu () {
@@ -467,6 +512,15 @@
 			return
 		}
 		error.value = ''
+		// 换个助手 = 开新对话，和切换就诊人一个道理：历史是绑在这段聊天上的，
+		// 换了人设还接着旧话头，新助手会拿着前任的上下文继续，很违和。
+		// （早先实现的"保留历史只换语气"试下来不成立——用户明确要求两个切换都重置。）
+		if (p.id !== session.personaId) {
+			session.conversationId = ''
+			session.conversationPatientId = ''
+			msgs.value = []
+			redflag.value = null
+		}
 		session.personaId = p.id
 		refreshAvatars()
 	}
@@ -615,6 +669,8 @@
 			},
 			onDone: (e) => {
 				session.conversationId = e.conversation_id
+				// 记下这个会话属于谁，换就诊人时靠它判断要不要丢（见 onPageShow）
+				session.conversationPatientId = session.patientId
 				sending.value = false
 				task = null
 				loadHistory(e.conversation_id)

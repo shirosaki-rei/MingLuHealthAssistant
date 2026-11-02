@@ -7,7 +7,11 @@ export const session = reactive({
 	patientId: '',
 	personaId: '',
 	/** 首轮不传，之后用每轮 done 返回的 conversation_id 续 */
-	conversationId: ''
+	conversationId: '',
+	/** conversationId 归属的就诊人。换就诊人时对话页靠它判断要不要丢掉旧会话
+	 *  （不能只比 session.patientId：标签页之间是 reLaunch，页面整个重建，
+	 *  页面级变量记不住上一次是谁）。 */
+	conversationPatientId: ''
 })
 
 export function resetSession () {

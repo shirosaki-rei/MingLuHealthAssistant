@@ -113,6 +113,12 @@
 			"style": {
 				"navigationBarTitleText": "协议"
 			}
+		},
+		{
+			"path": "pages/conversations/conversations",
+			"style": {
+				"navigationBarTitleText": "历史对话"
+			}
 		}
 	],
 	"globalStyle": {

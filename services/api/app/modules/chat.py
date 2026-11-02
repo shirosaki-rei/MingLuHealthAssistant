@@ -15,23 +15,26 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..database import new_id, now
+from ..database import get_sessionmaker, new_id, now
 from ..deps import CurrentUser, DbDep, PageQuery, paginate, require_action
-from ..errors import request_id_var
+from ..errors import not_found, request_id_var
 from ..modules import knowledge, safety
 from ..modules.memory import remember, recent_memories
 from ..modules.profile import get_owned_patient
 from ..platform import llm
+
+log = logging.getLogger("minglu")
 
 log = logging.getLogger("minglu")
 router = APIRouter(tags=["chat"])
@@ -180,7 +183,10 @@ def _orchestrate(
             latency_ms=_ms(started),
         )
 
-    completion = provider.complete(bundle.to_messages(), max_tokens=800)
+    # max_tokens 是上限不是固定消耗，非思考模型不受影响。给到 2000 是因为思考模型
+    # （deepseek-r1 / glm-z1 / qwq）会先把预算花在 reasoning_content 上，给小了正文
+    # 会被挤成空 content——那时 provider 会抛错走降级，用户看到的是模板兜底。
+    completion = provider.complete(bundle.to_messages(), max_tokens=2000)
     return _Plan(
         reply=completion.text,
         sources=[h.source_ref for h in hits],
@@ -243,8 +249,9 @@ def _stream(
         yield SseEvent("delta", {"delta": sentence}).render()
 
     assistant.content = "".join(accepted) or llm.DISCLAIMER
-    _extract_memories(db, user, conversation, user_message, assistant)
     db.commit()
+    # 记忆抽取改成后台线程：它是一次额外 LLM 调用，同步做会把 done 拖后 1~3 秒
+    _extract_memories_async(conversation.id, user_message.id)
     yield _done(db, user, conversation, assistant, plan).render()
 
 
@@ -382,8 +389,6 @@ def _resolve_conversation(
     if payload.conversation_id:
         conversation = db.get(models.Conversation, payload.conversation_id)
         if conversation is None or conversation.user_id != user.id:
-            from ..errors import not_found
-
             raise not_found("会话")
         return conversation
     conversation = models.Conversation(
@@ -418,32 +423,106 @@ def _wants_diagnosis(text: str) -> bool:
     return any(m in text for m in markers)
 
 
-def _extract_memories(
-    db: Session,
-    user: models.User,
-    conversation: models.Conversation,
-    user_message: models.Message,
-    assistant: models.Message,
-) -> None:
-    """从用户原话里抽事实型记忆。只认明确的关键词，不猜。
+def _extract_memories_async(conversation_id: str, user_message_id: str) -> None:
+    """后台线程跑记忆抽取，不阻塞 done 事件。
 
-    ponytail: 关键词抽取。上小模型抽取前，抽错的代价是用户看到「我记一下……对吗」
-    确认卡，误抽由确认环节兜住。
+    必须起线程：LLM 抽取是一次额外调用（1~3 秒），同步做会把 done 拖后，
+    用户盯着「正在输入…」白等。ORM 对象也不能跨线程传，所以只传 id，
+    线程里自己开 session（SQLAlchemy 的 session 不是线程安全的）。
     """
-    patient_id = conversation.patient_id
-    text = user_message.content
-    for keyword, key in (("过敏", "allergy"), ("高血压", "chronic_hypertension"), ("糖尿病", "chronic_diabetes")):
-        if keyword in text:
-            remember(
-                db,
-                user_id=user.id,
-                patient_id=patient_id,
-                kind="fact",
-                key=key,
-                value=text[:200],
-                source_msg_id=user_message.id,
-                confirmed=False,
-            )
+
+    def run() -> None:
+        db = get_sessionmaker()()
+        try:
+            _extract_memories(db, conversation_id, user_message_id)
+        except Exception as exc:  # noqa: BLE001 - 记忆是增强不是主链路，失败只记日志
+            log.warning("记忆抽取失败（不影响对话）：%s", exc)
+        finally:
+            db.close()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# key 用固定分类而不用自由文本：remember() 按 (user, patient, key) 去重，
+# 自由 key 会无限膨胀、同义不同名（「在吃的药」vs「用药」），固定分类才能真正去重。
+MEMORY_KEYS = frozenset(
+    {"medication", "symptom", "allergy", "chronic", "check", "plan", "habit", "emotion"}
+)
+
+MEMORY_PROMPT = """从用户的话里抽取健康相关事实，之后的对话要靠这些记住他。
+
+只抽用户明确说出来的，不推断、不补充、不夸大。
+用户说「没有 / 不 / 没」某种情况时**不要抽**——负向信息没有记忆价值
+（会产出 "chronic = 没有" 这种废话条目，还会占记忆条数）。
+一条一个要点，value 用简短中文（≤40 字），保留关键数字和药名。
+key 只能从下面选一个：
+  medication 在用什么药 / symptom 症状 / allergy 过敏 / chronic 慢性病
+  check 检查或体检 / plan 就诊计划 / habit 生活习惯 / emotion 情绪
+与健康无关就返回空数组。
+
+只输出 JSON，不要解释、不要 markdown 代码块：
+{{"facts":[{{"key":"medication","value":"每天早晨服用氨氯地平 5mg"}}]}}
+
+用户的话：{text}"""
+
+
+def _extract_memories(db: Session, conversation_id: str, user_message_id: str) -> None:
+    """LLM 总结式记忆抽取（第二期，2026-11-02）。
+
+    替换之前的关键词匹配：那个只认「过敏 / 高血压 / 糖尿病」三个词，value 还是用户
+    原话截断，记住的信息量约等于零。LLM 总结能捕获「最近在吃氨氯地平」「准备下周
+    做胃镜」这类真正有用的上下文。
+
+    写 confirmed=True：抽的是用户自己说出的事实、不是推断，记忆页可逐条删除兜底。
+    要等用户确认才生效的话，抽了也白抽——没人会专门去记忆页点确认。
+    """
+    provider = llm.get_provider()
+    if provider is None or provider.name == "local-template":
+        return  # 没接模型或正在降级，模板没有理解能力，抽不出东西
+    message = db.get(models.Message, user_message_id)
+    conversation = db.get(models.Conversation, conversation_id)
+    if message is None or conversation is None or message.content.strip() == "":
+        return
+    # 不传 max_tokens：抽取是后台任务，不在乎回复多长，而思考模型的推理长度不可预测，
+    # 写死额度（300、1000 都试过）会随机把正文挤成空 content，抽取就失败了。
+    reply = provider.complete(
+        [{"role": "user", "content": MEMORY_PROMPT.format(text=message.content[:500])}],
+    )
+    facts = _parse_facts(reply.text)
+    for key, value in facts:
+        remember(
+            db,
+            user_id=conversation.user_id,
+            patient_id=conversation.patient_id,
+            kind="fact",
+            key=key,
+            value=value,
+            source_msg_id=message.id,
+            confirmed=True,
+        )
+    if facts:
+        db.commit()
+
+
+def _parse_facts(text: str) -> list[tuple[str, str]]:
+    """从模型输出里抠 JSON。模型爱套 ```json 代码块，也可能多讲一句话，所以掐头去尾找括号。"""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return []
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    out: list[tuple[str, str]] = []
+    for item in payload.get("facts") or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if key in MEMORY_KEYS and value != "":
+            out.append((key, value[:200]))
+    return out
 
 
 def _ms(started: float) -> int:
@@ -492,4 +571,85 @@ def chat_history(
         ],
         total=total,
         has_more=has_more,
+    )
+
+
+# ---------------------------------------------------------------- 会话列表与归档（第三期）
+
+
+@router.get("/v1/conversations", response_model=schemas.ConversationList)
+def list_conversations(
+    *,
+    db: DbDep,
+    user: CurrentUser,
+    patient_id: str | None = None,
+    include_hidden: bool = False,
+    page: PageQuery = Depends(),
+    _: None = Depends(require_action("conversations.list")),
+):
+    """会话列表，新的在前。不传 patient_id 就是全部（客户端自己按就诊人/助手分组）。"""
+    stmt = select(models.Conversation).where(models.Conversation.user_id == user.id)
+    if patient_id:
+        stmt = stmt.where(models.Conversation.patient_id == patient_id)
+    if not include_hidden:
+        stmt = stmt.where(models.Conversation.hidden.is_(False))
+    stmt = stmt.order_by(models.Conversation.created_at.desc())
+    items, total, has_more = paginate(db, stmt, page)
+    return schemas.ConversationList(
+        items=[_conversation_out(db, c) for c in items],
+        total=total,
+        has_more=has_more,
+    )
+
+
+@router.patch("/v1/conversations/{conversation_id}", response_model=schemas.ConversationOut)
+def archive_conversation(
+    conversation_id: str,
+    payload: schemas.ConversationArchive,
+    *,
+    db: DbDep,
+    user: CurrentUser,
+    _: None = Depends(require_action("conversations.archive")),
+):
+    """归档 / 恢复。只置 hidden，消息一条不删——医疗场景不留硬删入口。"""
+    conversation = db.get(models.Conversation, conversation_id)
+    if conversation is None or conversation.user_id != user.id:
+        raise not_found("会话")
+    conversation.hidden = payload.hidden
+    db.flush()
+    return _conversation_out(db, conversation)
+
+
+def _conversation_out(db: Session, conversation: models.Conversation) -> schemas.ConversationOut:
+    """列表行：末条消息摘要 + 条数 + 就诊人/助手名字。
+
+    ponytail: 条数和摘要在 Python 侧数，不上 SQL 子查询。一页 20 个会话 ×
+    每个最多百来条消息，两千行不到；真到大数量级再改成 group by 子查询。
+    """
+    messages = list(
+        db.scalars(
+            select(models.Message)
+            .where(models.Message.conversation_id == conversation.id)
+            .order_by(models.Message.created_at.desc())
+            .limit(1)
+        )
+    )
+    count = db.scalar(
+        select(func.count())
+        .select_from(models.Message)
+        .where(models.Message.conversation_id == conversation.id)
+    )
+    patient = db.get(models.PatientProfile, conversation.patient_id)
+    persona = db.get(models.Persona, conversation.persona_id) if conversation.persona_id else None
+    last = messages[0].content.strip()[:60] if messages else ""
+    return schemas.ConversationOut(
+        id=conversation.id,
+        patient_id=conversation.patient_id,
+        patient_name=patient.name if patient is not None else "已删除的就诊人",
+        persona_id=conversation.persona_id,
+        persona_name=persona.name if persona is not None else "明路助手",
+        last_message=last,
+        message_count=int(count or 0),
+        created_at=conversation.created_at,
+        hidden=conversation.hidden,
     )

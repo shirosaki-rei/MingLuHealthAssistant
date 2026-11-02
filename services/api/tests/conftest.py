@@ -17,6 +17,9 @@ os.environ["JWT_SECRET"] = "test-secret-at-least-32-bytes-long-for-hs256"
 os.environ["SMS_ECHO"] = "1"
 os.environ["PAYMENT_MOCK"] = "1"
 os.environ["STORAGE_DIR"] = str(SERVICE_ROOT / "var" / "test-storage")
+# 测试不许连真实模型：慢、花钱，而且模型输出不稳定（markdown 标记、句式）
+# 会让断言 SSE 按句切分的用例随机失败。强制走 LocalProvider。
+os.environ["LLM_BASE_URL"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 

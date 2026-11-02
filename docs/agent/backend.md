@@ -7,9 +7,8 @@
 
 ```bash
 cd services/api
-python -m pytest                                                  # 31 个，约 1 秒
-python -m pytest tests/test_contract.py::test_paywall_misblock_rate_is_zero   # 单个
-python -m pytest tests/test_contract.py -k paywall                # 按名字筛
+.venv\Scripts\python.exe -m pytest                               # 36 个，约 1 秒
+.venv\Scripts\python.exe -m pytest tests/test_contract.py -k paywall        # 按名字筛
 ```
 
 31 个的分布：`test_contract.py` 10（付费墙契约）、`test_architecture.py` 5（依赖规则）、
@@ -25,8 +24,10 @@ python -m pytest tests/test_contract.py -k paywall                # 按名字筛
 
 ```bash
 cd services/api
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000     # 手机连这个
-python -m uvicorn app.main:app --port 8011 &                  # 契约比对用
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000   # 手机连这个
+
+必须用 .venv 的解释器：main.py 挂了运营后台（sqladmin），系统 python 没这个依赖会 import 失败。
+换新机器先 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。
 ```
 
 默认 `DATABASE_URL` 是 sqlite（`services/api/minglu.db`），**开发不需要 docker**。

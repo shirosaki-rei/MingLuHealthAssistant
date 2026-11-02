@@ -1,0 +1,158 @@
+<template>
+	<view class="page">
+		<scroll-view class="scroll" direction="vertical">
+			<!-- 平铺列表，不按就诊人/助手分组：每行已经把「助手 · 就诊人」写在标题里，
+			     分组的收益只是多两个小标题，却要多一层折叠状态。真到几十条会话再分组。 -->
+			<view v-for="c in rows" :key="c.id" class="cRow" @tap="open(c)">
+				<view class="cRowIn">
+					<view class="grow">
+						<text class="cTitle">{{ c.persona_name }} · {{ c.patient_name }}</text>
+						<text class="cMeta">{{ c.last_message === '' ? '（还没有消息）' : c.last_message }}</text>
+						<text class="cTime">{{ shortTime(c.created_at) }} · {{ c.message_count }} 条</text>
+					</view>
+					<text class="tag tagBrand" v-if="c.id === session.conversationId">进行中</text>
+					<!-- 归档按钮在行内，必须 @tap.stop：不然点归档会顺手把这一行也打开 -->
+					<view class="cArc" @tap.stop="archive(c)">
+						<text class="cArcText">归档</text>
+					</view>
+				</view>
+			</view>
+
+			<view class="empty" v-if="rows.length === 0 && !loading">
+				<text class="emptyText">还没有历史对话。去「问助手」聊几句，这里就会出现。</text>
+			</view>
+
+			<text class="error" v-if="error !== ''">{{ error }}</text>
+		</scroll-view>
+
+		<!-- 归档不是删除：这里说清楚，免得用户以为点了历史就没了 -->
+		<text class="note">归档只是从列表藏起来，消息一条不删，也不会再出现在对话页。</text>
+	</view>
+</template>
+
+<script setup lang="ts">
+	import { ref } from 'vue'
+	import { api } from '@/api'
+	import { session } from '@/stores/session'
+	import { errText } from '@/utils/apierr'
+	import type { components } from '@/types/api'
+
+	type ConversationOut = components['schemas']['ConversationOut']
+
+	const rows = ref<ConversationOut[]>([])
+	const loading = ref(false)
+	const error = ref('')
+
+	onShow(() => {
+		load()
+	})
+
+	async function load () {
+		loading.value = true
+		error.value = ''
+		try {
+			const res = await api.listConversations({ page_size: 50 })
+			rows.value = res.items
+		} catch (e) {
+			error.value = errText(e)
+		} finally {
+			loading.value = false
+		}
+	}
+
+	/** 切回这段会话：把会话归属的三元组一起写进 session，对话页 onPageShow 会认。
+	 *  personaId 可能是 null（早期会话没传助手），置空让对话页回落到默认预设。 */
+	function open (c: ConversationOut) {
+		session.patientId = c.patient_id
+		session.personaId = c.persona_id ?? ''
+		session.conversationId = c.id
+		// 必须一起写：对话页靠它判断"换过就诊人没有"，漏写会被当成换人从而清掉会话
+		session.conversationPatientId = c.patient_id
+		uni.reLaunch({ url: '/pages/chat/chat' })
+	}
+
+	async function archive (c: ConversationOut) {
+		error.value = ''
+		try {
+			await api.archiveConversation(c.id, true)
+			await load()
+		} catch (e) {
+			error.value = errText(e)
+		}
+	}
+
+	/** 列表里只显示到分，ISO 串太长 */
+	function shortTime (iso: string): string {
+		return iso.length >= 16 ? iso.slice(5, 16).replace('T', ' ') : iso
+	}
+</script>
+
+<style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+
+	.scroll {
+		flex: 1;
+		min-height: 0;
+		padding: 24rpx;
+	}
+
+	/* 行形状同 person.uvue 的 rowBtn：外层有尺寸挂 @tap，里面只包一个填满的子 view */
+	.cRow {
+		margin-bottom: 16rpx;
+	}
+
+	.cRowIn {
+		flex-direction: row;
+		align-items: center;
+		padding: 20rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-card);
+		border: 2rpx solid var(--c-border-weak);
+	}
+
+	.cTitle {
+		font-size: 28rpx;
+		font-weight: 600;
+		color: var(--c-text);
+		line-height: 1.4;
+	}
+
+	.cMeta {
+		margin-top: 6rpx;
+		font-size: 24rpx;
+		color: var(--c-text-2);
+		line-height: 1.5;
+	}
+
+	.cTime {
+		margin-top: 6rpx;
+		font-size: 22rpx;
+		color: var(--c-faint);
+		line-height: 1.4;
+	}
+
+	.cArc {
+		margin-left: 16rpx;
+		padding: 10rpx 20rpx;
+		border-radius: 12rpx;
+		background-color: var(--c-card-soft);
+		flex-shrink: 0;
+	}
+
+	.cArcText {
+		font-size: 24rpx;
+		color: var(--c-muted);
+	}
+
+	.note {
+		flex-shrink: 0;
+		padding: 16rpx 24rpx 32rpx;
+		font-size: 22rpx;
+		color: var(--c-faint);
+		line-height: 1.5;
+	}
+</style>

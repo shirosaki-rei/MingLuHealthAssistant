@@ -440,6 +440,70 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /v1/conversations:
+    get:
+      tags: [chat]
+      summary: 会话列表（第三期：历史对话 / 归档）
+      description: |
+        当前用户的会话，按创建时间倒序。传 `patient_id` 只列该就诊人的；
+        不传则列全部（客户端自行按就诊人 / 助手分组）。
+        归档过的会话默认不返回，`include_hidden=true` 时才带上。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: patient_id
+          in: query
+          schema: { type: string }
+        - name: include_hidden
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, has_more]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConversationOut' }
+                  total: { type: integer }
+                  has_more: { type: boolean }
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/conversations/{conversation_id}:
+    patch:
+      tags: [chat]
+      summary: 归档 / 恢复会话
+      description: |
+        软归档：置 `hidden=true` 后它从主列表消失，但消息一条不删，
+        `include_hidden=true` 仍能查回来。删除会话没有接口——医疗场景不留硬删。
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hidden]
+              properties:
+                hidden: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversationOut' }
+        default:
+          $ref: '#/components/responses/Error'
+
   # ---------------- 预问诊 ----------------
   /v1/preconsult/start:
     post:
@@ -1158,6 +1222,8 @@ paths:
                   - memory.update
                   - memory.delete
                   - chat.history
+                  - conversations.list
+                  - conversations.archive
                   - reminder.pending
                   - reminder.delete
                   - report.read
@@ -1362,6 +1428,22 @@ components:
           type: array
           items: { type: string }
         allergy_notes: { type: string }
+
+    ConversationOut:
+      type: object
+      required: [id, patient_id, patient_name, persona_name, last_message, message_count, created_at, hidden]
+      properties:
+        id: { type: string }
+        patient_id: { type: string }
+        patient_name: { type: string, description: 就诊人姓名，列表上直接显示 }
+        persona_id:
+          type: [string, "null"]
+          description: 会话创建时用的助手；早期数据可能为 null
+        persona_name: { type: string, description: 助手名，null 时是「明路助手」 }
+        last_message: { type: string, description: 末条消息正文截断（≤60 字），列表摘要用 }
+        message_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        hidden: { type: boolean, description: true = 已归档 }
 
     Persona:
       type: object

@@ -13,6 +13,7 @@ type PatientUpdate = components['schemas']['PatientUpdate']
 type Persona = components['schemas']['Persona']
 type PersonaCreate = components['schemas']['PersonaCreate']
 type ChatMessage = components['schemas']['ChatMessage']
+type ConversationOut = components['schemas']['ConversationOut']
 type PreConsult = components['schemas']['PreConsult']
 type MedicalRecord = components['schemas']['MedicalRecord']
 type DepartmentMatch = components['schemas']['DepartmentMatch']
@@ -156,6 +157,15 @@ export const api = {
 	// ---------- chat ----------
 	chatHistory: (query: { page?: number; page_size?: number; patient_id?: string; conversation_id?: string }) =>
 		request<Paged<ChatMessage>>('/v1/chat/history', { query }),
+
+	// ---------- conversations ----------
+	/** 会话列表（第三期）。不传 patient_id 就是全部，客户端自行分组。 */
+	listConversations: (query: { patient_id?: string; include_hidden?: boolean; page?: number; page_size?: number }) =>
+		request<Paged<ConversationOut>>('/v1/conversations', { query }),
+
+	/** 归档 / 恢复。hidden=true 后从主列表消失，消息不删。 */
+	archiveConversation: (conversationId: string, hidden: boolean) =>
+		request<ConversationOut>('/v1/conversations/' + conversationId, { method: 'PATCH', data: { hidden } }),
 
 	// ---------- preconsult ----------
 	preconsultStart: (patientId: string, chiefComplaint: string) =>

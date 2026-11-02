@@ -11,8 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 首次运行
 
 ```bash
-# 后端（默认 sqlite，不需要 docker）
-cd services/api && python -m pytest && PUBLIC_BASE_URL=http://<电脑局域网IP>:8000 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# 后端（默认 sqlite，不需要 docker）。用项目的 .venv：main.py 挂了运营后台（sqladmin），
+# 系统 python 没这个依赖会 import 失败
+cd services/api && .venv\Scripts\python.exe -m pytest && PUBLIC_BASE_URL=http://<电脑局域网IP>:8000 .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # 前端真机
 D:/Dev/HBuilderX/cli.exe launch app-android --project "F:/hongmeng/pj1/android" --deviceId <序列号> --playground standard
@@ -29,7 +30,7 @@ cp .env.example .env && docker compose up --build
 
 | 目录 | 是什么 | 什么时候动 |
 |---|---|---|
-| `android/` | **正式客户端**，蒸汽模式，19 页面，契约 40 operation 全有入口 | 日常前端开发都在这 |
+| `android/` | **正式客户端**，蒸汽模式，20 页面，契约 42 operation 全有入口 | 日常前端开发都在这 |
 | `uni-appX/` | 旧 PoC 工程。`utils/stream.ts`（三端流式适配层）和 `uni_modules/minglu-alarm`（精确闹钟 UTS 插件）**只在这里** | 移植流式/闹钟能力时才动 |
 | `poc/` | PoC 验证工程 + 零依赖桩服务 | 不前沿了，别在里面写正式代码 |
 | `services/api/` | FastAPI 后端，模块化单体，13 模块 | 后端开发 |
