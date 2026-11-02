@@ -11,7 +11,6 @@ import { formatError } from '@/utils/err'
 
 export type ErrorCode = components['schemas']['ErrorCode']
 
-/** 服务端错误体。NETWORK 是客户端自己造的（uni.request fail，没拿到响应体） */
 export interface ApiFailure {
 	code: ErrorCode | 'NETWORK'
 	message: string
@@ -19,17 +18,22 @@ export interface ApiFailure {
 }
 
 /**
- * 真机调试改这里。**当前走 USB 通道**：电脑连手机热点时二层不通（热点的客户端
- * 隔离会挡掉电脑 IP），所以用 `adb reverse` 把手机的 127.0.0.1:8000 转到电脑上，
- * BASE_URL 跟着填 127.0.0.1。每次插线后重跑一次：
+ * 真机连哪个后端。
  *
- *     adb reverse tcp:8000 tcp:8000
+ *   LOCAL = true   本地 USB 调试，配 `adb reverse tcp:8000 tcp:8000`
+ *   LOCAL = false  线上服务器
  *
- * 只想用 Wi-Fi 直连时，改成电脑的 WLAN IPv4（ipconfig 查），并先在手机浏览器确认
- * `http://<电脑IP>:8000/docs` 能打开——打不开就是热点隔离，不是代码问题。
- * 上线前这里必须换成正式域名。
+ * 电脑连手机热点时局域网是不通的（热点客户端隔离会挡掉电脑 IP），所以本地调试
+ * 走 adb reverse + 127.0.0.1，别去改局域网 IP，那条路走不通。
+ *
+ * 上线前这里必须换成正式域名，并且私网 IP 不许打进 Release 包——现在靠这个
+ * 布尔值人工保证，正式发版前应改成构建期注入 + 检查。
  */
-export const BASE_URL = 'http://127.0.0.1:8000'
+const LOCAL = false
+
+export const BASE_URL = LOCAL
+	? 'http://127.0.0.1:8000'
+	: 'http://43.143.225.197:8000'
 
 interface RequestOptions {
 	method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
