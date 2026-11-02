@@ -85,7 +85,14 @@ export function request<T> (path: string, options: RequestOptions = {}): Promise
 			timeout: 30000,
 			success: (res: any) => {
 				const statusCode: number = res.statusCode
-				if (statusCode === 401) clearAuth()
+				if (statusCode === 401) {
+					clearAuth()
+					// 必须跳登录页：只清 token 的话页面停在静默空态上——首页显示
+					// 「明路用户」「还没有就诊人」「会员 —」，用户以为数据丢了。
+					// token 失效不止过期一种：重新部署换了 JWT_SECRET，旧 token 全部作废，
+					// 这时每个已登录用户都会撞上这个分支。
+					uni.reLaunch({ url: '/pages/login/login' })
+				}
 
 				if (statusCode >= 200 && statusCode < 300) {
 					const raw = res.data

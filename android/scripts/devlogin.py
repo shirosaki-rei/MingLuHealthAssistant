@@ -42,10 +42,14 @@ def text(s: str) -> None:
 
 
 def base_url() -> str:
-    m = re.search(r"BASE_URL\s*=\s*'([^']+)'", HTTP_TS.read_text(encoding="utf-8"))
-    if not m:
-        sys.exit(f"没在 {HTTP_TS} 里找到 BASE_URL")
-    return m.group(1)
+    """从 http.ts 读 LOCAL 开关和两个地址，别在这儿硬编码第三份。"""
+    src = HTTP_TS.read_text(encoding="utf-8")
+    local = re.search(r"const LOCAL = (true|false)", src)
+    urls = re.findall(r"'(http[^']+)'", src)
+    if not local or not urls:
+        sys.exit(f"没在 {HTTP_TS} 里解析到 LOCAL / BASE_URL")
+    # LOCAL=true 取本地那个（写在前面），否则取线上（写在后面）
+    return urls[0] if local.group(1) == "true" else urls[-1]
 
 
 def post(url: str, body: str) -> int:
