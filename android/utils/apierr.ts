@@ -15,3 +15,9 @@ export function errText (e: any): string {
 export function isUnauthorized (e: any): boolean {
 	return (e as ApiFailure)?.code === 'UNAUTHORIZED'
 }
+
+/** 是否网络层失败（连不上/超时）——首页据此挂「连不上服务器」横幅，
+ *  把静默空态和真的没数据区分开。 */
+export function isNetworkError (e: any): boolean {
+	return (e as ApiFailure)?.code === 'NETWORK'
+}

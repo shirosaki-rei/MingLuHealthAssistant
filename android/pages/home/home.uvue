@@ -1,6 +1,13 @@
 <template>
 	<view class="page">
 		<scroll-view class="scroll" direction="vertical">
+			<!-- 连不上服务器时必须说出来：静默空态会被读成「数据丢了」，
+			     实测这么误判过。横幅带重试，位置在问候语上方，不用滚动就能看见 -->
+			<view class="netBar" v-if="netError">
+				<text class="netBarText">连不上服务器，下面显示的可能不是最新内容</text>
+				<view class="netBarBtn" @tap="retry"><text class="netBarBtnText">重试</text></view>
+			</view>
+
 			<!-- 问候 + 就诊人头像，右侧头像替代了原来单独的就诊人卡 -->
 			<view class="greeting">
 				<view class="grow">
@@ -120,7 +127,7 @@
 	import { auth, isLoggedIn } from '@/stores/auth'
 	import { session } from '@/stores/session'
 	import type { components } from '@/types/api'
-	import { errText } from '@/utils/apierr'
+	import { errText, isNetworkError } from '@/utils/apierr'
 	import { hasList, hasText } from '@/utils/blank'
 	import { appOnly } from '@/utils/apponly'
 	import { ic } from '@/utils/icons'
@@ -134,6 +141,8 @@
 	const reminders = ref<PendingReminder[]>([])
 	const events = ref<TimelineEvent[]>([])
 	const error = ref('')
+	// 网络层失败才挂横幅；业务错误照旧走底部 error，两者不是一回事
+	const netError = ref(false)
 
 	const RELATION: Record<string, string> = {
 		self: '本人',
@@ -301,6 +310,7 @@
 	async function loadPatients () {
 		try {
 			const res = await api.listPatients()
+			netError.value = false
 			const list = res.items
 			// 先定选中谁，最后才写 patients：这次写会触发重渲染，届时选中值必须是新的
 			let pick = ''
@@ -329,6 +339,7 @@
 			patients.value = list
 			loadPanels()
 		} catch (e) {
+			if (isNetworkError(e)) netError.value = true
 			error.value = errText(e)
 		}
 	}
@@ -340,13 +351,16 @@
 			const res = await api.pendingReminders(24)
 			reminders.value = res.items
 		} catch (e) {
-			// 首页这块是附属信息，拉不到不影响主流程
+			// 首页这块是附属信息，拉不到不影响主流程；但网络不通要挂横幅，
+			// 否则用户看到的空态和「今天真没提醒」长得一模一样
+			if (isNetworkError(e)) netError.value = true
 		}
 		try {
 			const res = await api.timeline(session.patientId, { page: 1, page_size: 3 })
 			events.value = res.items
 		} catch (e) {
 			// 同上
+			if (isNetworkError(e)) netError.value = true
 		}
 	}
 
@@ -354,9 +368,17 @@
 		try {
 			const m = await api.getMembership()
 			membershipLabel.value = m.status === 'active' ? '生效中' : '未开通'
+			netError.value = false
 		} catch (e) {
 			membershipLabel.value = '—'
+			if (isNetworkError(e)) netError.value = true
 		}
+	}
+
+	/** 横幅上的重试：把首屏三个请求重跑一遍 */
+	function retry () {
+		loadPatients()
+		loadMembership()
 	}
 
 	function go (url: string) {
@@ -402,6 +424,37 @@
 		flex-direction: row;
 		align-items: center;
 		margin-bottom: 20rpx;
+	}
+
+	/* 网络不通横幅：用 warn 色而不是 danger——不是用户做错了什么 */
+	.netBar {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		margin-bottom: 20rpx;
+		padding: 20rpx 24rpx;
+		border-radius: 16rpx;
+		background-color: var(--c-warn-bg);
+		border: 2rpx solid var(--c-warn);
+	}
+
+	.netBarText {
+		flex: 1;
+		min-width: 0;
+		font-size: 24rpx;
+		color: var(--c-warn);
+	}
+
+	/* 外层 view 有明确尺寸并挂 @tap，里面只包一个填满它的 text（见 vapor-mode.md §9b） */
+	.netBarBtn {
+		padding: 8rpx 20rpx;
+		border-radius: 10rpx;
+		background-color: var(--c-warn);
+	}
+
+	.netBarBtnText {
+		font-size: 24rpx;
+		color: var(--c-on-brand);
 	}
 
 	.greetingDate {

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -86,8 +87,13 @@ DISCLAIMER = "以上内容由 AI 生成，仅供参考，不能替代医生面�
 
 class Provider(Protocol):
     name: str
+    model: str
 
     def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply: ...
+
+    def stream(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> Iterator[str]:
+        """增量吐正文。一个 chunk 可能只有一两个字，调用方负责按句缓冲。"""
+        ...
 
 
 def estimate_tokens(text: str) -> int:
@@ -103,6 +109,7 @@ class LocalProvider:
     """
 
     name = "local-template"
+    model = "local-template"
 
     def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply:
         system = messages[0]["content"] if messages else ""
@@ -135,6 +142,10 @@ class LocalProvider:
             model=self.name,
         )
 
+    def stream(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> Iterator[str]:
+        # 本地模板没有增量概念，整篇当一块吐出去，调用方的按句缓冲逻辑不变
+        yield self.complete(messages, max_tokens).text
+
 
 def _section(system: str, header: str) -> str:
     if header not in system:
@@ -164,14 +175,16 @@ class OpenAICompatProvider:
             raise RuntimeError("配置了 LLM_BASE_URL 但没配 LLM_API_KEY")
         self._base_url = base_url
         self._key = settings.llm_api_key
-        self._model = settings.llm_model or "default"
+        self.model = settings.llm_model or "default"
         self._effort = settings.llm_reasoning_effort
-        self._client = httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0))
+        # 读超时给到 90 秒：思考模型/排队时段的首 token 实测能到 20 秒以上，
+        # 30 秒会在长 prompt 上随机 ReadTimeout，而那时降级出去用户只会看到模板兜底。
+        self._client = httpx.Client(timeout=httpx.Timeout(90.0, connect=5.0))
 
     def complete(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> LlmReply:
         # max_tokens=None 时不传这个字段，用模型默认上限。思考模型的推理长度不可预测
         # （实测同一条输入推理从几百到四千 token 波动），写死额度会把正文挤成空 content。
-        body: dict = {"model": self._model, "messages": messages, "stream": False}
+        body: dict = {"model": self.model, "messages": messages, "stream": False}
         if max_tokens:
             body["max_tokens"] = max_tokens
         if self._effort:
@@ -192,15 +205,46 @@ class OpenAICompatProvider:
             # 思考模型把 max_tokens 全花在推理上时 content 会是空的。返回空文本会让用户
             # 看到空白气泡，宁可抛出去走降级（知识库模板兜底），那至少是句人话。
             raise ValueError(
-                f"模型 {self._model!r} 返回了空 content"
+                f"模型 {self.model!r} 返回了空 content"
                 "（思考模型先把预算用在推理上，把 max_tokens 调大再试）"
             )
         return LlmReply(
             text=text,
             tokens_in=int(usage.get("prompt_tokens", 0)),
             tokens_out=int(usage.get("completion_tokens", 0)),
-            model=payload.get("model", self._model),
+            model=payload.get("model", self.model),
         )
+
+    def stream(self, messages: list[dict[str, str]], max_tokens: int | None = None) -> Iterator[str]:
+        body: dict = {"model": self.model, "messages": messages, "stream": True}
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if self._effort:
+            body["reasoning_effort"] = self._effort
+        # 请求在第一次迭代时才真正发出，所以调用方（编排层）不会被这里的异常打到
+        with self._client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self._key}"},
+            json=body,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (event.get("choices") or [{}])[0].get("delta") or {}
+                # 只取 content：reasoning_content 是思考过程，不该给用户看；
+                # 而且思考链里满是句号，混进来会把「按句切分」切得稀碎。
+                text = delta.get("content")
+                if text:
+                    yield text
 
 
 _provider: Provider | None = None

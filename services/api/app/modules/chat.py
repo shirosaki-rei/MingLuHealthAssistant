@@ -35,8 +35,6 @@ from ..modules.profile import get_owned_patient
 from ..platform import llm
 
 log = logging.getLogger("minglu")
-
-log = logging.getLogger("minglu")
 router = APIRouter(tags=["chat"])
 
 RECENT_TURNS = 4  # 最近 4 轮对话注入上下文（PRD §4.6 预算 1200t）
@@ -102,6 +100,8 @@ class _Plan:
     tokens_in: int
     tokens_out: int
     latency_ms: int
+    # 有它就真流式（provider.stream 的生成器），None 表示 reply 已是全文
+    stream: Iterator[str] | None = None
 
 
 def _orchestrate(
@@ -162,7 +162,8 @@ def _orchestrate(
             latency_ms=_ms(started),
         )
 
-    # 健康问答：检索 → 生成
+    # 健康问答：检索 → 生成。生成器不在这一层发起请求（第一次迭代才发），
+    # 所以首 token 的等待发生在 SSE 流里，而不是阻塞在返回 StreamingResponse 之前。
     hits = knowledge.retrieve(db, text, top_k=3)
     bundle = _build_context(db, user, patient, conversation, persona, hits)
     provider = llm.get_provider()
@@ -185,19 +186,45 @@ def _orchestrate(
 
     # max_tokens 是上限不是固定消耗，非思考模型不受影响。给到 2000 是因为思考模型
     # （deepseek-r1 / glm-z1 / qwq）会先把预算花在 reasoning_content 上，给小了正文
-    # 会被挤成空 content——那时 provider 会抛错走降级，用户看到的是模板兜底。
-    completion = provider.complete(bundle.to_messages(), max_tokens=2000)
+    # 会被挤成空 content——那时流会中断走兜底，用户看到的是一句人话而不是空白气泡。
+    messages = bundle.to_messages()
     return _Plan(
-        reply=completion.text,
+        reply="",
         sources=[h.source_ref for h in hits],
         redflag=None,
         injected=None,
         intent="health_qa",
-        model=completion.model,
-        tokens_in=completion.tokens_in,
-        tokens_out=completion.tokens_out,
+        model=provider.model,
+        # 流式拿不到 usage，用估算顶上：ai_log 的成本核算不能因为改了流式就归零
+        tokens_in=llm.estimate_tokens("".join(m["content"] for m in messages)),
+        tokens_out=0,
         latency_ms=_ms(started),
+        stream=provider.stream(messages, max_tokens=2000),
     )
+
+
+def _sentences(plan: _Plan) -> Iterator[str]:
+    """句子的唯一来源：全文路径直接切，流式路径按 chunk 增量切。
+
+    增量切分直接复用 `safety.iter_sentences`——没碰到句末标点时它返回空列表和
+    原样剩余，天然就是「只吐已确定的完整句子」，不必自己维护缓冲区状态。
+    """
+    if plan.stream is None:
+        yield from safety.iter_sentences(plan.reply)[0]
+        return
+    pending = ""
+    try:
+        for chunk in plan.stream:
+            pending += chunk
+            ready, pending = safety.iter_sentences(pending)
+            yield from ready
+    except Exception as exc:  # noqa: BLE001 - 断流不能让用户对着空白气泡
+        log.warning("流式生成中断（已发出的句子保留）：%s", exc)
+        # 兜底句本身也会过 postcheck，所以仍然是一句能发出去的人话
+        yield "我这边网络抖了一下，没接上模型。你再说一次好不好？"
+        return
+    tail, _ = safety.iter_sentences(pending)
+    yield from tail
 
 
 def _stream(
@@ -238,7 +265,7 @@ def _stream(
 
     accepted: list[str] = []
     blocked = False
-    for sentence in safety.iter_sentences(plan.reply)[0]:
+    for sentence in _sentences(plan):
         check = safety.postcheck(sentence)
         if not check.ok:
             # 命中禁用词：不发这句，改发固定收口
@@ -250,6 +277,9 @@ def _stream(
 
     assistant.content = "".join(accepted) or llm.DISCLAIMER
     db.commit()
+    if plan.stream is not None:
+        # 流式没有 usage，按输出长度补一个估算值，_done 紧接着就会读它
+        plan.tokens_out = llm.estimate_tokens(assistant.content)
     # 记忆抽取改成后台线程：它是一次额外 LLM 调用，同步做会把 done 拖后 1~3 秒
     _extract_memories_async(conversation.id, user_message.id)
     yield _done(db, user, conversation, assistant, plan).render()
