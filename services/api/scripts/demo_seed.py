@@ -2,7 +2,7 @@
 演示数据预热
 
 作用：造一个「有历史」的账号，演示打开就有内容，不用现场攒数据。
-会在目标库里创建：3 位就诊人、2 段对话、1 份预问诊病历、1 笔已支付订单、2 条提醒。
+会在目标库里创建：3 位就诊人、2 段对话、1 份预问诊病历、1 笔已支付订单、3 条提醒（一人一条）。
 
 用法：
     # 1. 后端先跑起来（本地库）
@@ -113,7 +113,8 @@ def main():
         sys.exit(1)
     me = by_relation.get("self") or patients[0]
     parent = by_relation.get("parent") or patients[0]
-    pid, parent_id = me["id"], parent["id"]
+    child = by_relation.get("child") or patients[0]
+    pid, parent_id, child_id = me["id"], parent["id"], child["id"]
 
     # ---------- 对话 ----------
     convs = [
@@ -200,12 +201,16 @@ def main():
         return t
 
     plans = [
-        ("测血压", "早上起床后静坐 5 分钟再测", safe_time(1)),
-        ("吃降压药", "氨氯地平 5mg，饭后", safe_time(2)),
+        (pid, "吃降压药", "氨氯地平 5mg，饭后", safe_time(1)),
+        (parent_id, "测空腹血糖", "起床后、早餐前", safe_time(2)),
+        (child_id, "吃维生素 D", "每天一粒，随餐", safe_time(3)),
     ]
-    for title, content, at in plans:
+    # 三个人各建各的：提醒从创建起就按 patient_id 隔离（服务端 /v1/reminders/pending
+    # 按人过滤），早先三条全挂在 parent_id 上，隔离修好后另外两人首页就是空的，
+    # 反倒演示不出「数据按人分开」。
+    for patient_id, title, content, at in plans:
         r = client.post("/v1/reminders", headers=h, json={
-            "patient_id": parent_id, "kind": "medication", "title": title,
+            "patient_id": patient_id, "kind": "medication", "title": title,
             "content": content, "fire_at": at.isoformat(), "recurrence": "daily",
         })
         if r.status_code in (200, 201):
@@ -223,7 +228,7 @@ def main():
     print("\n  演示入口：")
     print("   首页 → 对话（问头晕）→ 预问诊 → 科室匹配 → 医生 → 下单")
     print("   首页 → 健康 → 时间线（能看到刚才的订单与病历）")
-    print("   首页 → 提醒（两条用药提醒）")
+    print("   首页 → 提醒（三位就诊人各一条，切人能看出按人分开）")
     print()
     return 0
 
